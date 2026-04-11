@@ -36,10 +36,10 @@ import {
 } from 'lucide-react';
 
 /**
- * [사계절 런앤맵 - 긴급 오류 수정본]
- * 1. 지도 미표시 해결: invalidateSize() 호출 타이밍 최적화 및 다중 호출
- * 2. 저장 실패 해결: 인증 로직 강화 및 이미지 압축 최적화 (Firestore Rule 준수)
- * 3. UI 최적화: 메인 화면 요소 크기 축소로 버튼 사라짐 방지
+ * [사계절 런앤맵 - 최종 긴급 복구 및 최적화 버전]
+ * 1. 지도 복구: 로그아웃/재로그인 시 지도 인스턴스 초기화 및 invalidateSize 로직 강화
+ * 2. UI 수정: 기록하기 버튼 글자 겹침 방지 (white-space: nowrap)
+ * 3. 저장 안정화: 저장 전 익명 인증 강제 재확인 및 이미지 압축 최적화 (Rule 1, 3 준수)
  */
 
 const firebaseConfig = {
@@ -52,8 +52,8 @@ const firebaseConfig = {
   databaseURL: "https://fourseason-run-and-map-default-rtdb.firebaseio.com/" 
 };
 
-// 고유 앱 아이디 (안정적인 통신을 위해 v2024-stable-v2로 갱신)
-const appId = 'fourseason-run-and-map-v2024-final-v2'; 
+// 고유 앱 아이디 (안정적인 통신을 위해 v2024-final-v3로 갱신)
+const appId = 'fourseason-run-and-map-v2024-final-v3'; 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
@@ -109,14 +109,14 @@ export default function App() {
 
   const isAdmin = nickname.toLowerCase() === 'admin';
 
-  // 이미지 압축 (강력하게 압축하여 저장 실패 방지)
+  // 이미지 압축 (강력 압축으로 Firestore Rule 1MB 제한 보호)
   const compressImage = (base64) => {
     return new Promise((resolve) => {
       const img = new Image();
       img.src = base64;
       img.onload = () => {
         const canvas = document.createElement('canvas');
-        const MAX_WIDTH = 600; // 크기를 더 축소하여 안정성 확보
+        const MAX_WIDTH = 500; // 가로폭을 더 줄여 안정성 확보
         let width = img.width;
         let height = img.height;
         if (width > MAX_WIDTH) { height *= MAX_WIDTH / width; width = MAX_WIDTH; }
@@ -124,7 +124,7 @@ export default function App() {
         const ctx = canvas.getContext('2d');
         if (ctx) {
           ctx.drawImage(img, 0, 0, width, height);
-          resolve(canvas.toDataURL('image/jpeg', 0.5)); // 화질 0.5로 조정
+          resolve(canvas.toDataURL('image/jpeg', 0.5)); 
         }
       };
     });
@@ -143,7 +143,7 @@ export default function App() {
     reader.readAsDataURL(file);
   };
 
-  // 인증 보장 로직 (Rule 3)
+  // 인증 보장 로직 (저장 실패 방지 핵심 - Rule 3)
   const ensureAuth = async () => {
     if (auth.currentUser) return auth.currentUser;
     try {
@@ -151,7 +151,7 @@ export default function App() {
       setUser(res.user);
       return res.user;
     } catch (err) {
-      console.error("인증 실패:", err);
+      console.error("Auth Re-try Fail:", err);
       return null;
     }
   };
@@ -166,7 +166,7 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // 실시간 데이터 수신
+  // 실시간 데이터 수신 (Rule 1)
   useEffect(() => {
     if (!user || !nickname) return;
     const coll = collection(db, 'artifacts', appId, 'public', 'data', 'reports');
@@ -175,7 +175,7 @@ export default function App() {
         .sort((a, b) => new Date(b.discoveredTime) - new Date(a.discoveredTime));
       setReports(data);
       updateMarkers(data);
-    }, (err) => console.error("Firestore 오류:", err));
+    }, (err) => console.error("Firestore 수신 에러:", err));
     return () => unsubscribe();
   }, [user, nickname]);
 
@@ -195,29 +195,39 @@ export default function App() {
     document.head.appendChild(script);
   }, []);
 
-  // 지도 초기화 및 크기 보정 엔진
+  // 지도 초기화 및 복구 엔진 (Issue 1 해결)
   useEffect(() => {
     if (isScriptLoaded && nickname && activeTab === 'map' && mapContainerRef.current) {
       const initMap = () => {
         if (!mapContainerRef.current) return;
-        if (!leafletMap.current) {
-          leafletMap.current = window.L.map(mapContainerRef.current, { 
-            zoomControl: false, attributionControl: false 
-          }).setView(GEUMJEONG_CENTER, 14);
-          window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(leafletMap.current);
+        
+        // 기존 인스턴스가 있다면 제거하고 새로 시작 (로그아웃 후 재로그인 대응)
+        if (leafletMap.current) {
+          leafletMap.current.remove();
+          leafletMap.current = null;
         }
+
+        leafletMap.current = window.L.map(mapContainerRef.current, { 
+          zoomControl: false, attributionControl: false 
+        }).setView(GEUMJEONG_CENTER, 14);
+        window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(leafletMap.current);
+        
         updateMarkers(reports);
         
-        // 지도가 하얗게 나오지 않도록 다중 보정 호출
-        [100, 300, 800, 1500].forEach(delay => {
-          setTimeout(() => {
-            if (leafletMap.current) leafletMap.current.invalidateSize();
-          }, delay);
+        // 렌더링 지연에 따른 지도 하얀 화면 방지 (다중 보정)
+        [100, 400, 1000].forEach(delay => {
+          setTimeout(() => { if (leafletMap.current) leafletMap.current.invalidateSize(); }, delay);
         });
       };
       
       const timer = setTimeout(initMap, 200);
-      return () => clearTimeout(timer);
+      return () => {
+        clearTimeout(timer);
+        if (leafletMap.current) {
+          leafletMap.current.remove();
+          leafletMap.current = null;
+        }
+      };
     }
   }, [isScriptLoaded, activeTab, nickname]);
 
@@ -245,7 +255,7 @@ export default function App() {
       localStorage.setItem('team_nickname', inputNickname);
       setNickname(inputNickname);
     } catch (err) {
-      alert("합류 실패! 인터넷을 확인하세요.");
+      alert("합류 실패! 네트워크를 확인하세요.");
     }
   };
 
@@ -253,8 +263,8 @@ export default function App() {
     e.preventDefault();
     setIsUploading(true);
     try {
-      const activeUser = await ensureAuth(); // 저장 직전 인증 재검증
-      if (!activeUser) throw new Error("Unauthenticated");
+      const activeUser = await ensureAuth(); // 저장 직전 인증 강제 확인
+      if (!activeUser) throw new Error("인증 없음");
 
       const center = leafletMap.current ? leafletMap.current.getCenter() : { lat: GEUMJEONG_CENTER[0], lng: GEUMJEONG_CENTER[1] };
       const loc = formData.customLocation || { lat: center.lat, lng: center.lng };
@@ -272,7 +282,7 @@ export default function App() {
       alert("지도에 성공적으로 저장되었습니다! 🍀");
     } catch (err) { 
       console.error(err);
-      alert("저장에 실패했습니다. 잠시 후 다시 시도하세요."); 
+      alert("저장 실패: 이미지 용량을 줄이거나 다시 시도하세요."); 
     } finally { setIsUploading(false); }
   };
 
@@ -342,14 +352,22 @@ export default function App() {
         </div>
         <div className="flex items-center gap-2">
           <span className="text-[10px] font-black bg-[#f0fdf4] text-[#047857] px-3 py-1.5 rounded-full border border-[#d1fae5]">{nickname}</span>
-          <button onClick={() => { localStorage.removeItem('team_nickname'); setNickname(''); signOut(auth); }} className="p-2 bg-slate-50 rounded-xl text-slate-400 active:scale-90 transition-all"><LogOut size={18}/></button>
+          <button onClick={() => { if(window.confirm("로그아웃 하시겠습니까?")){ localStorage.removeItem('team_nickname'); setNickname(''); signOut(auth); } }} className="p-2 bg-slate-50 rounded-xl text-slate-400 active:scale-90 transition-all"><LogOut size={18}/></button>
         </div>
       </header>
 
       <main className="flex-1 relative overflow-hidden">
+        {/* 지도 탭 */}
         <div className={`absolute inset-0 z-10 ${activeTab === 'map' ? 'visible' : 'hidden'}`}>
           <div ref={mapContainerRef} className="w-full h-full" />
-          <button onClick={() => setActiveTab('add')} className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-[#1e293b] text-white font-black px-10 py-4 rounded-full z-[1001] shadow-2xl active:scale-95 transition-transform text-sm flex items-center gap-2">기록하기 <PrettyClover size={16} color="white" /></button>
+          {/* Issue 2 해결: whitespace-nowrap 및 padding 조정 */}
+          <button 
+            onClick={() => setActiveTab('add')} 
+            className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-[#1e293b] text-white font-black px-8 py-4 rounded-full z-[1001] shadow-2xl active:scale-95 transition-transform text-sm flex items-center gap-2 whitespace-nowrap"
+            style={{ minWidth: '140px', justifyContent: 'center' }}
+          >
+            기록하기 <PrettyClover size={16} color="white" />
+          </button>
         </div>
 
         <div className={`absolute inset-0 bg-[#f0fdf4] p-6 overflow-y-auto z-[2000] transition-transform duration-300 ${activeTab === 'add' ? 'translate-y-0' : 'translate-y-full'}`}>
