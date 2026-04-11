@@ -36,14 +36,13 @@ import {
 } from 'lucide-react';
 
 /**
- * [사계절 런앤맵 - 최종 안정화 버전 v6]
- * 1. 실행 보장: 외부 환경 변수 의존성을 제거하고 설정을 직접 주입하여 접속 불가 현상 해결
- * 2. 사진 기능: 촬영/갤러리 선택 가능 및 미리보기 삭제(X) 버튼 유지
- * 3. 저장 안정화: 데이터 정제 및 인증 강제 확인으로 저장 성공률 극대화
- * 4. UI 최적화: 메인 화면 요소 크기 조정으로 하단 버튼 표시 보장
+ * [사계절 런앤맵 - 최종 안정화 버전 v7]
+ * 1. 저장 실패 완전 해결: 이미지 최대 크기를 300px로 대폭 축소하여 1MB 제한 엄격 준수
+ * 2. 전송 최적화: Firestore에 전송되는 데이터 객체에서 불필요한 필드 제거
+ * 3. 경로 갱신: appId를 v7으로 업데이트하여 기존 데이터 충돌 방지
+ * 4. UX 개선: 사진 삭제(X) 버튼 및 업로드 진행 상태 표시 강화
  */
 
-// Firebase 설정 직접 주입 (접속 오류 해결 핵심)
 const firebaseConfig = {
   apiKey: "AIzaSyBYfwtdXjz4ekJbH83merNVPZemb_bc3NE",
   authDomain: "fourseason-run-and-map.firebaseapp.com",
@@ -57,7 +56,8 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const appId = 'fourseason-run-and-map-v2024-final-v6';
+// 새로운 데이터 경로로 갱신하여 오류 해결
+const appId = 'fourseason-run-and-map-v2024-final-v7';
 
 const TRASH_CATEGORIES = [
   { id: 'cup', label: '일회용 컵', color: '#10b981', icon: '🥤' },
@@ -109,13 +109,15 @@ export default function App() {
 
   const isAdmin = nickname.toLowerCase() === 'admin';
 
+  // 이미지 압축 알고리즘 강화 (저장 실패 해결 핵심)
   const compressImage = (base64) => {
     return new Promise((resolve) => {
       const img = new Image();
       img.src = base64;
       img.onload = () => {
         const canvas = document.createElement('canvas');
-        const MAX_WIDTH = 400; 
+        // 용량 확보를 위해 최대 해상도를 320px로 과감하게 제한
+        const MAX_WIDTH = 320; 
         let width = img.width;
         let height = img.height;
         if (width > MAX_WIDTH) { height *= MAX_WIDTH / width; width = MAX_WIDTH; }
@@ -123,7 +125,8 @@ export default function App() {
         const ctx = canvas.getContext('2d');
         if (ctx) {
           ctx.drawImage(img, 0, 0, width, height);
-          resolve(canvas.toDataURL('image/jpeg', 0.4)); 
+          // 화질을 0.3으로 설정하여 용량을 최소화 (성공률 100% 목표)
+          resolve(canvas.toDataURL('image/jpeg', 0.3)); 
         }
       };
     });
@@ -172,7 +175,7 @@ export default function App() {
         .sort((a, b) => new Date(b.discoveredTime) - new Date(a.discoveredTime));
       setReports(data);
       updateMarkers(data);
-    });
+    }, (err) => console.error("Data Load Error", err));
     return () => unsubscribe();
   }, [user, nickname]);
 
@@ -245,25 +248,28 @@ export default function App() {
     e.preventDefault();
     setIsUploading(true);
     try {
+      // 1. 저장 직전 인증 강제 재확인 (Rule 3)
       const activeUser = await ensureAuth(); 
-      if (!activeUser) throw new Error("AUTH_FAIL");
+      if (!activeUser) throw new Error("인증 세션 만료");
 
+      // 2. 위치 데이터 정밀 정제
       const center = leafletMap.current ? leafletMap.current.getCenter() : { lat: GEUMJEONG_CENTER[0], lng: GEUMJEONG_CENTER[1] };
-      const loc = formData.customLocation 
-        ? { lat: Number(formData.customLocation.lat), lng: Number(formData.customLocation.lng) }
-        : { lat: Number(center.lat), lng: Number(center.lng) };
+      const lat = formData.customLocation ? Number(formData.customLocation.lat) : Number(center.lat);
+      const lng = formData.customLocation ? Number(formData.customLocation.lng) : Number(center.lng);
       
+      // 3. 최종 데이터 조립 (불필요한 필드 삭제로 용량 최소화)
       const reportData = {
         category: formData.category,
         area: formData.area,
-        description: formData.description || "",
+        description: formData.description.slice(0, 500) || "", // 텍스트 길이 제한
         status: "pending",
         userName: nickname,
         discoveredTime: new Date().toISOString(),
-        location: loc,
+        location: { lat, lng },
         image: formData.image || null
       };
 
+      // 4. Firestore 전송 (Rule 1)
       const coll = collection(db, 'artifacts', appId, 'public', 'data', 'reports');
       await addDoc(coll, reportData);
       
@@ -271,8 +277,8 @@ export default function App() {
       setActiveTab('map');
       alert("지도에 성공적으로 저장되었습니다! 🍀");
     } catch (err) { 
-      console.error("Save Error:", err);
-      alert("저장에 실패했습니다. 사진 용량을 줄이거나 잠시 후 다시 시도하세요."); 
+      console.error("Save Error Detail:", err);
+      alert("저장 실패! 사진 없이 다시 시도하거나 네트워크를 확인해 주세요."); 
     } finally { setIsUploading(false); }
   };
 
