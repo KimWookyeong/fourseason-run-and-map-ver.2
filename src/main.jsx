@@ -40,6 +40,7 @@ import {
  * 1. 지도 복구: 로그아웃/재로그인 시 지도 인스턴스 초기화 및 invalidateSize 로직 강화
  * 2. UI 수정: 기록하기 버튼 글자 겹침 방지 (white-space: nowrap)
  * 3. 저장 안정화: 저장 전 익명 인증 강제 재확인 및 이미지 압축 최적화 (Rule 1, 3 준수)
+ * 4. 사진 업로드: 촬영 및 갤러리 선택이 모두 가능하도록 capture 속성 제거
  */
 
 const firebaseConfig = {
@@ -116,7 +117,7 @@ export default function App() {
       img.src = base64;
       img.onload = () => {
         const canvas = document.createElement('canvas');
-        const MAX_WIDTH = 500; // 가로폭을 더 줄여 안정성 확보
+        const MAX_WIDTH = 500; 
         let width = img.width;
         let height = img.height;
         if (width > MAX_WIDTH) { height *= MAX_WIDTH / width; width = MAX_WIDTH; }
@@ -143,7 +144,7 @@ export default function App() {
     reader.readAsDataURL(file);
   };
 
-  // 인증 보장 로직 (저장 실패 방지 핵심 - Rule 3)
+  // 인증 보장 로직 (Rule 3)
   const ensureAuth = async () => {
     if (auth.currentUser) return auth.currentUser;
     try {
@@ -166,7 +167,7 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // 실시간 데이터 수신 (Rule 1)
+  // 실시간 데이터 수신
   useEffect(() => {
     if (!user || !nickname) return;
     const coll = collection(db, 'artifacts', appId, 'public', 'data', 'reports');
@@ -179,7 +180,7 @@ export default function App() {
     return () => unsubscribe();
   }, [user, nickname]);
 
-  // 지도 라이브러리 동적 로드
+  // 지도 라이브러리 로드
   useEffect(() => {
     if (typeof window.L !== 'undefined') {
       setIsScriptLoaded(true);
@@ -195,13 +196,12 @@ export default function App() {
     document.head.appendChild(script);
   }, []);
 
-  // 지도 초기화 및 복구 엔진 (Issue 1 해결)
+  // 지도 초기화 및 복구 엔진
   useEffect(() => {
     if (isScriptLoaded && nickname && activeTab === 'map' && mapContainerRef.current) {
       const initMap = () => {
         if (!mapContainerRef.current) return;
         
-        // 기존 인스턴스가 있다면 제거하고 새로 시작 (로그아웃 후 재로그인 대응)
         if (leafletMap.current) {
           leafletMap.current.remove();
           leafletMap.current = null;
@@ -214,7 +214,6 @@ export default function App() {
         
         updateMarkers(reports);
         
-        // 렌더링 지연에 따른 지도 하얀 화면 방지 (다중 보정)
         [100, 400, 1000].forEach(delay => {
           setTimeout(() => { if (leafletMap.current) leafletMap.current.invalidateSize(); }, delay);
         });
@@ -263,7 +262,7 @@ export default function App() {
     e.preventDefault();
     setIsUploading(true);
     try {
-      const activeUser = await ensureAuth(); // 저장 직전 인증 강제 확인
+      const activeUser = await ensureAuth(); 
       if (!activeUser) throw new Error("인증 없음");
 
       const center = leafletMap.current ? leafletMap.current.getCenter() : { lat: GEUMJEONG_CENTER[0], lng: GEUMJEONG_CENTER[1] };
@@ -311,7 +310,6 @@ export default function App() {
     );
   }
 
-  // 메인 화면 최적화
   if (!nickname) {
     return (
       <div className="fixed inset-0 bg-[#f0fdf4] flex flex-col items-center justify-center p-6 z-[9999] font-sans text-center overflow-hidden">
@@ -357,10 +355,8 @@ export default function App() {
       </header>
 
       <main className="flex-1 relative overflow-hidden">
-        {/* 지도 탭 */}
         <div className={`absolute inset-0 z-10 ${activeTab === 'map' ? 'visible' : 'hidden'}`}>
           <div ref={mapContainerRef} className="w-full h-full" />
-          {/* Issue 2 해결: whitespace-nowrap 및 padding 조정 */}
           <button 
             onClick={() => setActiveTab('add')} 
             className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-[#1e293b] text-white font-black px-8 py-4 rounded-full z-[1001] shadow-2xl active:scale-95 transition-transform text-sm flex items-center gap-2 whitespace-nowrap"
@@ -382,8 +378,9 @@ export default function App() {
                    <span className="text-[10px] font-black">{formData.customLocation ? "위치 완료" : "내 위치 찾기"}</span>
                 </button>
                 <label className="h-24 rounded-[25px] bg-white border-2 border-dashed border-[#d1fae5] flex flex-col items-center justify-center gap-2 text-[#10b981] cursor-pointer overflow-hidden active:scale-95 transition-all shadow-sm">
-                   <input type="file" accept="image/*" capture="environment" onChange={handleImageChange} className="hidden" />
-                   {formData.image ? <img src={formData.image} className="w-full h-full object-cover" /> : <><Camera size={24}/><span className="text-[10px] font-black">사진 촬영/업로드</span></>}
+                   {/* 촬영 및 갤러리 선택이 모두 가능하도록 capture 속성 제거 */}
+                   <input type="file" accept="image/*" onChange={handleImageChange} className="hidden" />
+                   {formData.image ? <img src={formData.image} className="w-full h-full object-cover" /> : <><Camera size={24}/><span className="text-[10px] font-black text-center">촬영 또는<br/>갤러리 선택</span></>}
                 </label>
              </div>
              <select value={formData.area} onChange={e => setFormData({...formData, area: e.target.value})} className="p-4 rounded-xl border-2 border-[#e2e8f0] font-bold text-base outline-none focus:border-[#10b981] bg-white shadow-sm">
