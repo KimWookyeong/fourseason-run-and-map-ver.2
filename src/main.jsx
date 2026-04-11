@@ -36,11 +36,10 @@ import {
 } from 'lucide-react';
 
 /**
- * [사계절 런앤맵 - 최종 긴급 복구 및 최적화 버전]
- * 1. 지도 복구: 로그아웃/재로그인 시 지도 인스턴스 초기화 및 invalidateSize 로직 강화
- * 2. UI 수정: 기록하기 버튼 글자 겹침 방지 (white-space: nowrap)
- * 3. 저장 안정화: 저장 전 익명 인증 강제 재확인 및 이미지 압축 최적화 (Rule 1, 3 준수)
- * 4. 사진 업로드: 촬영 및 갤러리 선택이 모두 가능하도록 capture 속성 제거
+ * [사계절 런앤맵 - 최종 안정화 버전]
+ * 1. 이미지 최적화: 용량 초과로 인한 저장 실패 방지를 위해 압축률 상향 (400px, 0.4 quality)
+ * 2. 저장 안정화: 인증 오류와 용량 오류를 구분하여 처리 및 재인증 로직 강화
+ * 3. 사진 업로드: 촬영 및 갤러리 선택이 모두 가능하도록 설정 유지
  */
 
 const firebaseConfig = {
@@ -53,8 +52,7 @@ const firebaseConfig = {
   databaseURL: "https://fourseason-run-and-map-default-rtdb.firebaseio.com/" 
 };
 
-// 고유 앱 아이디 (안정적인 통신을 위해 v2024-final-v3로 갱신)
-const appId = 'fourseason-run-and-map-v2024-final-v3'; 
+const appId = 'fourseason-run-and-map-v2024-final-v4'; 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
@@ -70,7 +68,6 @@ const TRASH_CATEGORIES = [
 const GEUMJEONG_AREAS = ["부산대/장전동", "온천천/부곡동", "구서/남산동", "금사/서동", "금정산/노포동"];
 const GEUMJEONG_CENTER = [35.243, 129.092];
 
-// 네잎클로버 SVG 디자인 (하트 잎사귀)
 const PrettyClover = ({ size = 50, color = "#10b981" }) => (
   <svg width={size} height={size} viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ filter: 'drop-shadow(0 4px 6px rgba(0,0,0,0.1))' }}>
     <g transform="translate(50, 50)">
@@ -110,14 +107,14 @@ export default function App() {
 
   const isAdmin = nickname.toLowerCase() === 'admin';
 
-  // 이미지 압축 (강력 압축으로 Firestore Rule 1MB 제한 보호)
+  // 이미지 압축 알고리즘 고도화 (최대 해상도 400px로 제한)
   const compressImage = (base64) => {
     return new Promise((resolve) => {
       const img = new Image();
       img.src = base64;
       img.onload = () => {
         const canvas = document.createElement('canvas');
-        const MAX_WIDTH = 500; 
+        const MAX_WIDTH = 400; 
         let width = img.width;
         let height = img.height;
         if (width > MAX_WIDTH) { height *= MAX_WIDTH / width; width = MAX_WIDTH; }
@@ -125,7 +122,7 @@ export default function App() {
         const ctx = canvas.getContext('2d');
         if (ctx) {
           ctx.drawImage(img, 0, 0, width, height);
-          resolve(canvas.toDataURL('image/jpeg', 0.5)); 
+          resolve(canvas.toDataURL('image/jpeg', 0.4)); // 더 가벼운 0.4 화질 적용
         }
       };
     });
@@ -144,7 +141,6 @@ export default function App() {
     reader.readAsDataURL(file);
   };
 
-  // 인증 보장 로직 (Rule 3)
   const ensureAuth = async () => {
     if (auth.currentUser) return auth.currentUser;
     try {
@@ -152,7 +148,7 @@ export default function App() {
       setUser(res.user);
       return res.user;
     } catch (err) {
-      console.error("Auth Re-try Fail:", err);
+      console.error("인증 재시도 실패:", err);
       return null;
     }
   };
@@ -167,7 +163,6 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // 실시간 데이터 수신
   useEffect(() => {
     if (!user || !nickname) return;
     const coll = collection(db, 'artifacts', appId, 'public', 'data', 'reports');
@@ -176,11 +171,10 @@ export default function App() {
         .sort((a, b) => new Date(b.discoveredTime) - new Date(a.discoveredTime));
       setReports(data);
       updateMarkers(data);
-    }, (err) => console.error("Firestore 수신 에러:", err));
+    }, (err) => console.error("데이터 수신 에러:", err));
     return () => unsubscribe();
   }, [user, nickname]);
 
-  // 지도 라이브러리 로드
   useEffect(() => {
     if (typeof window.L !== 'undefined') {
       setIsScriptLoaded(true);
@@ -196,36 +190,22 @@ export default function App() {
     document.head.appendChild(script);
   }, []);
 
-  // 지도 초기화 및 복구 엔진
   useEffect(() => {
     if (isScriptLoaded && nickname && activeTab === 'map' && mapContainerRef.current) {
       const initMap = () => {
         if (!mapContainerRef.current) return;
-        
-        if (leafletMap.current) {
-          leafletMap.current.remove();
-          leafletMap.current = null;
-        }
-
-        leafletMap.current = window.L.map(mapContainerRef.current, { 
-          zoomControl: false, attributionControl: false 
-        }).setView(GEUMJEONG_CENTER, 14);
+        if (leafletMap.current) { leafletMap.current.remove(); leafletMap.current = null; }
+        leafletMap.current = window.L.map(mapContainerRef.current, { zoomControl: false, attributionControl: false }).setView(GEUMJEONG_CENTER, 14);
         window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(leafletMap.current);
-        
         updateMarkers(reports);
-        
         [100, 400, 1000].forEach(delay => {
           setTimeout(() => { if (leafletMap.current) leafletMap.current.invalidateSize(); }, delay);
         });
       };
-      
       const timer = setTimeout(initMap, 200);
       return () => {
         clearTimeout(timer);
-        if (leafletMap.current) {
-          leafletMap.current.remove();
-          leafletMap.current = null;
-        }
+        if (leafletMap.current) { leafletMap.current.remove(); leafletMap.current = null; }
       };
     }
   }, [isScriptLoaded, activeTab, nickname]);
@@ -250,11 +230,12 @@ export default function App() {
     e.preventDefault();
     if (!inputNickname.trim()) return;
     try {
-      await ensureAuth();
+      const activeUser = await ensureAuth();
+      if (!activeUser) throw new Error("인증 실패");
       localStorage.setItem('team_nickname', inputNickname);
       setNickname(inputNickname);
     } catch (err) {
-      alert("합류 실패! 네트워크를 확인하세요.");
+      alert("합류 실패! 네트워크 상태를 확인해 주세요.");
     }
   };
 
@@ -263,12 +244,21 @@ export default function App() {
     setIsUploading(true);
     try {
       const activeUser = await ensureAuth(); 
-      if (!activeUser) throw new Error("인증 없음");
+      if (!activeUser) {
+        alert("로그인 세션이 만료되었습니다. 다시 시도해 주세요.");
+        setIsUploading(false);
+        return;
+      }
 
       const center = leafletMap.current ? leafletMap.current.getCenter() : { lat: GEUMJEONG_CENTER[0], lng: GEUMJEONG_CENTER[1] };
       const loc = formData.customLocation || { lat: center.lat, lng: center.lng };
-      const coll = collection(db, 'artifacts', appId, 'public', 'data', 'reports');
       
+      // 용량 체크 로직 추가 (기록 방지용)
+      if (formData.image && formData.image.length > 900000) {
+        throw new Error("IMAGE_TOO_LARGE");
+      }
+
+      const coll = collection(db, 'artifacts', appId, 'public', 'data', 'reports');
       await addDoc(coll, { 
         ...formData, 
         location: loc, 
@@ -280,8 +270,12 @@ export default function App() {
       setActiveTab('map');
       alert("지도에 성공적으로 저장되었습니다! 🍀");
     } catch (err) { 
-      console.error(err);
-      alert("저장 실패: 이미지 용량을 줄이거나 다시 시도하세요."); 
+      console.error("상세 에러:", err);
+      if (err.message === "IMAGE_TOO_LARGE") {
+        alert("이미지 파일이 너무 큽니다. 다른 사진을 선택하거나 조금 더 기다려 주세요.");
+      } else {
+        alert("저장에 실패했습니다. 사진 없이 텍스트만 먼저 등록해 보시거나, 잠시 후 다시 시도하세요."); 
+      }
     } finally { setIsUploading(false); }
   };
 
@@ -378,7 +372,6 @@ export default function App() {
                    <span className="text-[10px] font-black">{formData.customLocation ? "위치 완료" : "내 위치 찾기"}</span>
                 </button>
                 <label className="h-24 rounded-[25px] bg-white border-2 border-dashed border-[#d1fae5] flex flex-col items-center justify-center gap-2 text-[#10b981] cursor-pointer overflow-hidden active:scale-95 transition-all shadow-sm">
-                   {/* 촬영 및 갤러리 선택이 모두 가능하도록 capture 속성 제거 */}
                    <input type="file" accept="image/*" onChange={handleImageChange} className="hidden" />
                    {formData.image ? <img src={formData.image} className="w-full h-full object-cover" /> : <><Camera size={24}/><span className="text-[10px] font-black text-center">촬영 또는<br/>갤러리 선택</span></>}
                 </label>
