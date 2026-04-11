@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>금정구 사계절 런앤맵</title>
+    <!-- 디자인 도구(Tailwind)와 지도 도구(Leaflet)를 미리 불러옵니다 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+      body { margin: 0; padding: 0; background-color: #f0fdf4; overflow: hidden; }
+      #root { min-height: 100vh; width: 100vw; }
+      /* 지도 로딩 전 하얀 칸 방지 */
+      .leaflet-container { background: #f0fdf4 !important; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <!-- 아래 경로를 .tsx에서 .jsx로 수정했습니다. 이제 앱이 연결됩니다! -->
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
