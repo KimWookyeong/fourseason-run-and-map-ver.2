@@ -37,14 +37,14 @@ import {
 } from 'lucide-react';
 
 /**
- * [사계절 런앤맵 - 데이터 저장 및 관리자 기능 완전 복구 버전 v10]
- * 1. 저장 실패 해결: React+Firebase 필수 패턴 적용 및 저장 시 인증 상태 가드 (Rule 3)
- * 2. 데이터 공유 보장: 고정된 appId 경로 사용하여 모든 기기 실시간 동기화 (Rule 1)
- * 3. 관리자 권한 복구: admin 초기화 실패 원인이던 배치 삭제 로직 안정화
- * 4. 사진 업로드 최적화: 320px 초고압축 적용하여 1MB 제한 무조건 통과
+ * [사계절 런앤맵 - 데이터 저장 및 관리자 기능 완전 복구 버전 v11]
+ * 1. 저장 실패 해결: 저장 시점의 인증 유효성 강제 확인 및 데이터 전송 객체 최적화 (Rule 3)
+ * 2. 데이터 공유 보장: 시스템 권장 appId 경로를 엄격히 사용하여 보안 규칙 통과 (Rule 1)
+ * 3. 관리자 권한 복구: admin 초기화 실패를 방지하기 위해 인증된 세션에서 배치 삭제 실행
+ * 4. UX 개선: "데이터 연결 중" 메시지 대신 자동 재인증 시도 로직 추가
  */
 
-// 1. Firebase 초기화 (컴포넌트 외부)
+// 1. Firebase Initialization (Outside component to prevent re-init)
 const firebaseConfig = typeof __firebase_config !== 'undefined' 
   ? JSON.parse(__firebase_config) 
   : {
@@ -60,7 +60,8 @@ const firebaseConfig = typeof __firebase_config !== 'undefined'
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'fourseason-run-and-map-v10-final';
+// Rule 1: Use specific artifacts path for data consistency
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'fourseason-run-and-map-v11-stable';
 
 const TRASH_CATEGORIES = [
   { id: 'cup', label: '일회용 컵', color: '#10b981', icon: '🥤' },
@@ -112,54 +113,54 @@ export default function App() {
 
   const isAdmin = nickname.toLowerCase() === 'admin';
 
-  // [MANDATORY] 인증 리스너 및 초기 인증 시도 (Rule 3)
-  useEffect(() => {
-    const initAuth = async () => {
-      try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
-          await signInAnonymously(auth);
-        }
-      } catch (err) {
-        console.error("인증 엔진 가동 실패:", err);
-      } finally {
-        setIsAppReady(true);
+  // [RULE 3] Immediate Authentication for data access
+  const authenticate = async () => {
+    try {
+      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+        await signInWithCustomToken(auth, __initial_auth_token);
+      } else {
+        await signInAnonymously(auth);
       }
+    } catch (err) {
+      console.error("Authentication failed:", err);
+    }
+  };
+
+  useEffect(() => {
+    const initApp = async () => {
+      await authenticate();
+      setIsAppReady(true);
     };
-    initAuth();
-    const unsubscribe = onAuthStateChanged(auth, (u) => {
-      setUser(u);
-      if (u) console.log("인증 완료:", u.uid);
-    });
+    initApp();
+    const unsubscribe = onAuthStateChanged(auth, setUser);
     return () => unsubscribe();
   }, []);
 
-  // [MANDATORY] 실시간 데이터 수신 (Rule 1 & Auth Guard)
+  // [RULE 1] Data Fetching with Auth Guard
   useEffect(() => {
     if (!user || !nickname) return;
     
-    const coll = collection(db, 'artifacts', appId, 'public', 'data', 'reports');
-    const unsubscribe = onSnapshot(coll, (snap) => {
+    const reportsColl = collection(db, 'artifacts', appId, 'public', 'data', 'reports');
+    const unsubscribe = onSnapshot(reportsColl, (snap) => {
       const data = snap.docs.map(d => ({ id: d.id, ...d.data() }))
         .sort((a, b) => new Date(b.discoveredTime) - new Date(a.discoveredTime));
       setReports(data);
       updateMarkers(data);
-    }, (err) => {
-      console.error("Firestore 수신 오류:", err);
+    }, (error) => {
+      console.error("Firestore loading failed:", error);
     });
     
     return () => unsubscribe();
   }, [user, nickname]);
 
-  // 이미지 압축 (Firestore 1MB 한계 방어)
+  // Image Compression (Targeting < 1MB limit)
   const compressImage = (base64) => {
     return new Promise((resolve) => {
       const img = new Image();
       img.src = base64;
       img.onload = () => {
         const canvas = document.createElement('canvas');
-        const MAX_WIDTH = 320; 
+        const MAX_WIDTH = 300; 
         let width = img.width;
         let height = img.height;
         if (width > MAX_WIDTH) { height *= MAX_WIDTH / width; width = MAX_WIDTH; }
@@ -186,7 +187,7 @@ export default function App() {
     reader.readAsDataURL(file);
   };
 
-  // 지도 라이브러리 동적 로드
+  // Map Library Injection
   useEffect(() => {
     if (typeof window.L !== 'undefined') {
       setIsScriptLoaded(true);
@@ -201,7 +202,7 @@ export default function App() {
     document.head.appendChild(script);
   }, []);
 
-  // 지도 인스턴스 관리 및 크기 보정
+  // Map Initialization and Sizing Fix
   useEffect(() => {
     if (isScriptLoaded && nickname && activeTab === 'map' && mapContainerRef.current) {
       const initMap = () => {
@@ -210,17 +211,14 @@ export default function App() {
         leafletMap.current = window.L.map(mapContainerRef.current, { zoomControl: false, attributionControl: false }).setView([GEUMJEONG_CENTER.lat, GEUMJEONG_CENTER.lng], 14);
         window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(leafletMap.current);
         updateMarkers(reports);
-        [100, 400, 1200].forEach(delay => {
+        [100, 500, 1500].forEach(delay => {
           setTimeout(() => { if (leafletMap.current) leafletMap.current.invalidateSize(); }, delay);
         });
       };
-      const timer = setTimeout(initMap, 200);
+      const timer = setTimeout(initMap, 250);
       return () => {
         clearTimeout(timer);
-        if (leafletMap.current) {
-          leafletMap.current.remove();
-          leafletMap.current = null;
-        }
+        if (leafletMap.current) { leafletMap.current.remove(); leafletMap.current = null; }
       };
     }
   }, [isScriptLoaded, activeTab, nickname]);
@@ -241,34 +239,36 @@ export default function App() {
     });
   };
 
-  const handleJoin = (e) => {
+  const handleJoin = async (e) => {
     e.preventDefault();
     if (!inputNickname.trim()) return;
-    localStorage.setItem('team_nickname', inputNickname);
-    setNickname(inputNickname);
+    try {
+      if (!user) await authenticate();
+      localStorage.setItem('team_nickname', inputNickname);
+      setNickname(inputNickname);
+    } catch (err) {
+      alert("합류 실패! 페이지를 새로고침 하세요.");
+    }
   };
 
   const handleSave = async (e) => {
     e.preventDefault();
-    if (!user) {
-      alert("데이터 연결 중입니다. 잠시만 기다려 주세요.");
-      return;
-    }
     setIsUploading(true);
     try {
-      // 위치 데이터 정제
-      let finalLat = GEUMJEONG_CENTER.lat;
-      let finalLng = GEUMJEONG_CENTER.lng;
-
-      if (formData.customLocation && !isNaN(formData.customLocation.lat)) {
-        finalLat = Number(formData.customLocation.lat);
-        finalLng = Number(formData.customLocation.lng);
-      } else if (leafletMap.current) {
-        const center = leafletMap.current.getCenter();
-        finalLat = !isNaN(center.lat) ? center.lat : GEUMJEONG_CENTER.lat;
-        finalLng = !isNaN(center.lng) ? center.lng : GEUMJEONG_CENTER.lng;
+      // 1. Final Auth Check for Rule 3
+      let activeUser = auth.currentUser;
+      if (!activeUser) {
+        const cred = await signInAnonymously(auth);
+        activeUser = cred.user;
       }
+      if (!activeUser) throw new Error("AUTH_REQUIRED");
+
+      // 2. Position Cleanup
+      const center = leafletMap.current ? leafletMap.current.getCenter() : GEUMJEONG_CENTER;
+      const lat = formData.customLocation ? Number(formData.customLocation.lat) : Number(center.lat);
+      const lng = formData.customLocation ? Number(formData.customLocation.lng) : Number(center.lng);
       
+      // 3. Document Payload
       const reportData = {
         category: formData.category,
         area: formData.area,
@@ -276,20 +276,21 @@ export default function App() {
         status: "pending",
         userName: nickname,
         discoveredTime: new Date().toISOString(),
-        location: { lat: finalLat, lng: finalLng },
+        location: { lat, lng },
         image: formData.image || null,
-        uid: user.uid
+        uid: activeUser.uid
       };
 
-      const coll = collection(db, 'artifacts', appId, 'public', 'data', 'reports');
-      await addDoc(coll, reportData);
+      // 4. Firestore Write (RULE 1)
+      const reportsColl = collection(db, 'artifacts', appId, 'public', 'data', 'reports');
+      await addDoc(reportsColl, reportData);
       
       setFormData({ category: 'cup', area: GEUMJEONG_AREAS[0], description: '', status: 'pending', customLocation: null, image: null });
       setActiveTab('map');
       alert("지도에 성공적으로 저장되었습니다! 🍀");
     } catch (err) { 
-      console.error("저장 오류:", err);
-      alert("전송 실패: 네트워크를 확인하고 다시 시도하세요."); 
+      console.error("Critical Save Error:", err);
+      alert("데이터 저장 실패: 네트워크 환경을 확인하고 다시 시도해 주세요."); 
     } finally { setIsUploading(false); }
   };
 
@@ -311,11 +312,14 @@ export default function App() {
   };
 
   const clearAllData = async () => {
-    if (!isAdmin || !user) return;
-    if (window.confirm("🚨 관리자 경고: 전체 활동 데이터를 초기화하시겠습니까?")) {
+    if (!isAdmin || !auth.currentUser) {
+      alert("관리자 권한이 필요합니다.");
+      return;
+    }
+    if (window.confirm("🚨 관리자 알림: 전체 데이터를 삭제하시겠습니까?")) {
       try {
-        const coll = collection(db, 'artifacts', appId, 'public', 'data', 'reports');
-        const snap = await getDocs(coll);
+        const reportsColl = collection(db, 'artifacts', appId, 'public', 'data', 'reports');
+        const snap = await getDocs(reportsColl);
         const batch = writeBatch(db);
         
         if (snap.empty) {
@@ -325,10 +329,10 @@ export default function App() {
 
         snap.docs.forEach((d) => batch.delete(d.ref));
         await batch.commit();
-        alert("모든 데이터가 초기화되었습니다.");
+        alert("모든 데이터가 깨끗하게 초기화되었습니다.");
       } catch (err) { 
-        console.error("초기화 실패:", err);
-        alert("초기화 실패: 권한이 없거나 네트워크 오류입니다."); 
+        console.error("Initialization Error:", err);
+        alert("초기화에 실패했습니다. 다시 로그인해 보세요."); 
       }
     }
   };
@@ -337,7 +341,7 @@ export default function App() {
     return (
       <div className="fixed inset-0 bg-[#f0fdf4] flex flex-col items-center justify-center">
         <Loader2 className="animate-spin text-[#10b981]" size={50} />
-        <p className="mt-4 font-black text-[#10b981] text-lg">사계절 앱 데이터 동기화 중...</p>
+        <p className="mt-4 font-black text-[#10b981] text-lg">사계절 앱 동기화 중...</p>
       </div>
     );
   }
@@ -477,7 +481,7 @@ export default function App() {
            {isAdmin && (
              <div className="bg-white p-10 rounded-[40px] border-2 border-dashed border-red-100 text-center shadow-md animate-pulse">
                 <h4 className="text-red-500 font-black mb-2 flex items-center justify-center gap-2"><AlertTriangle size={20}/> ADMIN TOOLS</h4>
-                <p className="text-[10px] text-[#047857] opacity-60 mb-6 font-bold">관리자 권한으로 전체 데이터를<br/>영구히 삭제할 수 있습니다.</p>
+                <p className="text-[10px] text-[#047857] opacity-60 mb-6 font-bold text-slate-800">관리자 권한으로 전체 데이터를<br/>영구히 삭제할 수 있습니다.</p>
                 <button onClick={clearAllData} className="w-full bg-red-500 text-white p-4 rounded-2xl font-black shadow-lg active:scale-95 transition-transform">데이터 전체 초기화</button>
              </div>
            )}
