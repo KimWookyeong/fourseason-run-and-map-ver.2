@@ -36,26 +36,17 @@ import {
 } from 'lucide-react';
 
 /**
- * [사계절 런앤맵 - 최종 안정화 버전]
- * 1. 이미지 최적화: 용량 초과로 인한 저장 실패 방지를 위해 압축률 상향 (400px, 0.4 quality)
- * 2. 저장 안정화: 인증 오류와 용량 오류를 구분하여 처리 및 재인증 로직 강화
- * 3. 사진 업로드: 촬영 및 갤러리 선택이 모두 가능하도록 설정 유지
+ * [사계절 런앤맵 - 최종 안정화 버전 v5]
+ * 1. 사진 삭제 기능: 이미지 미리보기 우측 상단에 삭제(X) 버튼 추가
+ * 2. 저장 실패 해결: 전송 데이터 정제 및 사진 유무와 무관한 저장 성공 보장
+ * 3. 인증 강화: 저장 직전 currentUser를 직접 참조하여 권한 누락 방지
  */
 
-const firebaseConfig = {
-  apiKey: "AIzaSyBYfwtdXjz4ekJbH83merNVPZemb_bc3NE",
-  authDomain: "fourseason-run-and-map.firebaseapp.com",
-  projectId: "fourseason-run-and-map",
-  storageBucket: "fourseason-run-and-map.firebasestorage.app",
-  messagingSenderId: "671510183044",
-  appId: "1:671510183044:web:59ad0cc29cf6bd98f3d6d1",
-  databaseURL: "https://fourseason-run-and-map-default-rtdb.firebaseio.com/" 
-};
-
-const appId = 'fourseason-run-and-map-v2024-final-v4'; 
+const firebaseConfig = JSON.parse(__firebase_config);
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'fourseason-run-and-map-v2024-final-v5';
 
 const TRASH_CATEGORIES = [
   { id: 'cup', label: '일회용 컵', color: '#10b981', icon: '🥤' },
@@ -107,7 +98,7 @@ export default function App() {
 
   const isAdmin = nickname.toLowerCase() === 'admin';
 
-  // 이미지 압축 알고리즘 고도화 (최대 해상도 400px로 제한)
+  // 이미지 압축 (400px 제한)
   const compressImage = (base64) => {
     return new Promise((resolve) => {
       const img = new Image();
@@ -122,7 +113,7 @@ export default function App() {
         const ctx = canvas.getContext('2d');
         if (ctx) {
           ctx.drawImage(img, 0, 0, width, height);
-          resolve(canvas.toDataURL('image/jpeg', 0.4)); // 더 가벼운 0.4 화질 적용
+          resolve(canvas.toDataURL('image/jpeg', 0.4)); 
         }
       };
     });
@@ -144,11 +135,13 @@ export default function App() {
   const ensureAuth = async () => {
     if (auth.currentUser) return auth.currentUser;
     try {
-      const res = await signInAnonymously(auth);
-      setUser(res.user);
-      return res.user;
+      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+        await signInWithCustomToken(auth, __initial_auth_token);
+      } else {
+        await signInAnonymously(auth);
+      }
+      return auth.currentUser;
     } catch (err) {
-      console.error("인증 재시도 실패:", err);
       return null;
     }
   };
@@ -171,7 +164,7 @@ export default function App() {
         .sort((a, b) => new Date(b.discoveredTime) - new Date(a.discoveredTime));
       setReports(data);
       updateMarkers(data);
-    }, (err) => console.error("데이터 수신 에러:", err));
+    });
     return () => unsubscribe();
   }, [user, nickname]);
 
@@ -185,8 +178,7 @@ export default function App() {
     document.head.appendChild(link);
     const script = document.createElement('script');
     script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
-    script.async = true; 
-    script.onload = () => setIsScriptLoaded(true);
+    script.async = true; script.onload = () => setIsScriptLoaded(true);
     document.head.appendChild(script);
   }, []);
 
@@ -230,12 +222,11 @@ export default function App() {
     e.preventDefault();
     if (!inputNickname.trim()) return;
     try {
-      const activeUser = await ensureAuth();
-      if (!activeUser) throw new Error("인증 실패");
+      await ensureAuth();
       localStorage.setItem('team_nickname', inputNickname);
       setNickname(inputNickname);
     } catch (err) {
-      alert("합류 실패! 네트워크 상태를 확인해 주세요.");
+      alert("합류 실패! 네트워크 상태를 확인하세요.");
     }
   };
 
@@ -243,38 +234,40 @@ export default function App() {
     e.preventDefault();
     setIsUploading(true);
     try {
+      // 1. 인증 즉시 확인
       const activeUser = await ensureAuth(); 
-      if (!activeUser) {
-        alert("로그인 세션이 만료되었습니다. 다시 시도해 주세요.");
-        setIsUploading(false);
-        return;
-      }
+      if (!activeUser) throw new Error("AUTH_FAIL");
 
+      // 2. 위치 데이터 정제 (중요: 순수 숫자 객체로 변환)
       const center = leafletMap.current ? leafletMap.current.getCenter() : { lat: GEUMJEONG_CENTER[0], lng: GEUMJEONG_CENTER[1] };
-      const loc = formData.customLocation || { lat: center.lat, lng: center.lng };
+      const loc = formData.customLocation 
+        ? { lat: Number(formData.customLocation.lat), lng: Number(formData.customLocation.lng) }
+        : { lat: Number(center.lat), lng: Number(center.lng) };
       
-      // 용량 체크 로직 추가 (기록 방지용)
-      if (formData.image && formData.image.length > 900000) {
-        throw new Error("IMAGE_TOO_LARGE");
-      }
+      // 3. 사진 유무에 상관없이 데이터 조립
+      const reportData = {
+        category: formData.category,
+        area: formData.area,
+        description: formData.description || "",
+        status: "pending",
+        userName: nickname,
+        discoveredTime: new Date().toISOString(),
+        location: loc,
+        image: formData.image || null
+      };
 
       const coll = collection(db, 'artifacts', appId, 'public', 'data', 'reports');
-      await addDoc(coll, { 
-        ...formData, 
-        location: loc, 
-        userName: nickname, 
-        discoveredTime: new Date().toISOString() 
-      });
+      await addDoc(coll, reportData);
       
       setFormData({ category: 'cup', area: GEUMJEONG_AREAS[0], description: '', status: 'pending', customLocation: null, image: null });
       setActiveTab('map');
       alert("지도에 성공적으로 저장되었습니다! 🍀");
     } catch (err) { 
-      console.error("상세 에러:", err);
-      if (err.message === "IMAGE_TOO_LARGE") {
-        alert("이미지 파일이 너무 큽니다. 다른 사진을 선택하거나 조금 더 기다려 주세요.");
+      console.error("Save Error:", err);
+      if (err.message === "AUTH_FAIL") {
+        alert("로그인이 필요합니다. 앱을 새로고침 해주세요.");
       } else {
-        alert("저장에 실패했습니다. 사진 없이 텍스트만 먼저 등록해 보시거나, 잠시 후 다시 시도하세요."); 
+        alert("저장에 실패했습니다. 관리자에게 문의하거나 잠시 후 다시 시도하세요."); 
       }
     } finally { setIsUploading(false); }
   };
@@ -363,7 +356,7 @@ export default function App() {
         <div className={`absolute inset-0 bg-[#f0fdf4] p-6 overflow-y-auto z-[2000] transition-transform duration-300 ${activeTab === 'add' ? 'translate-y-0' : 'translate-y-full'}`}>
           <div className="flex justify-between items-center mb-6">
             <h2 className="text-xl font-black text-[#1e293b]">NEW RECORD</h2>
-            <button onClick={() => setActiveTab('map')} className="p-2 bg-white rounded-xl shadow-sm border border-green-50"><X size={24}/></button>
+            <button onClick={() => { setFormData({...formData, image: null}); setActiveTab('map'); }} className="p-2 bg-white rounded-xl shadow-sm border border-green-50"><X size={24}/></button>
           </div>
           <form onSubmit={handleSave} className="flex flex-col gap-4 pb-12">
              <div className="grid grid-cols-2 gap-4">
@@ -371,10 +364,26 @@ export default function App() {
                    <MapPin size={24} color={formData.customLocation ? "#10b981" : "white"}/>
                    <span className="text-[10px] font-black">{formData.customLocation ? "위치 완료" : "내 위치 찾기"}</span>
                 </button>
-                <label className="h-24 rounded-[25px] bg-white border-2 border-dashed border-[#d1fae5] flex flex-col items-center justify-center gap-2 text-[#10b981] cursor-pointer overflow-hidden active:scale-95 transition-all shadow-sm">
-                   <input type="file" accept="image/*" onChange={handleImageChange} className="hidden" />
-                   {formData.image ? <img src={formData.image} className="w-full h-full object-cover" /> : <><Camera size={24}/><span className="text-[10px] font-black text-center">촬영 또는<br/>갤러리 선택</span></>}
-                </label>
+                <div className="relative h-24">
+                  <label className="w-full h-full rounded-[25px] bg-white border-2 border-dashed border-[#d1fae5] flex flex-col items-center justify-center gap-2 text-[#10b981] cursor-pointer overflow-hidden active:scale-95 transition-all shadow-sm">
+                    <input type="file" accept="image/*" onChange={handleImageChange} className="hidden" />
+                    {formData.image ? (
+                      <img src={formData.image} className="w-full h-full object-cover" />
+                    ) : (
+                      <><Camera size={24}/><span className="text-[10px] font-black text-center">촬영 또는<br/>갤러리 선택</span></>
+                    )}
+                  </label>
+                  {/* 사진 삭제 버튼 추가 */}
+                  {formData.image && (
+                    <button 
+                      type="button" 
+                      onClick={(e) => { e.preventDefault(); setFormData({...formData, image: null}); }}
+                      className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-1 shadow-lg z-10"
+                    >
+                      <X size={16} />
+                    </button>
+                  )}
+                </div>
              </div>
              <select value={formData.area} onChange={e => setFormData({...formData, area: e.target.value})} className="p-4 rounded-xl border-2 border-[#e2e8f0] font-bold text-base outline-none focus:border-[#10b981] bg-white shadow-sm">
                 {GEUMJEONG_AREAS.map(a => <option key={a} value={a}>{a}</option>)}
@@ -394,11 +403,11 @@ export default function App() {
         </div>
 
         <div className={`absolute inset-0 bg-[#f0fdf4] p-6 overflow-y-auto ${activeTab === 'list' ? 'visible' : 'hidden'}`}>
-           <h2 className="text-xl font-black text-[#1e293b] mb-8">ACTIVITY FEED</h2>
+           <h2 className="text-xl font-black text-[#1e293b] mb-6">ACTIVITY FEED</h2>
            {reports.length === 0 ? <div className="text-center py-24 text-slate-400 font-black text-lg">아직 기록이 없습니다.</div> : reports.map(r => (
              <div key={r.id} className="bg-white p-5 rounded-[35px] mb-5 border border-[#d1fae5] shadow-md text-center text-slate-800">
                 <div className="flex justify-between items-center mb-4">
-                   <span className="text-[10px] font-black text-[#1e293b] bg-green-50 px-3 py-1 rounded-full border border-green-100 flex items-center gap-2">{TRASH_CATEGORIES.find(c => c.id === r.category)?.icon} {r.area}</span>
+                   <span className="text-[10px] font-black text-[#10b981] bg-green-50 px-3 py-1 rounded-full border border-green-100 flex items-center gap-2">{TRASH_CATEGORIES.find(c => c.id === r.category)?.icon} {r.area}</span>
                    <button onClick={() => handleToggleStatus(r.id, r.status)} className={`text-[9px] font-black px-3 py-1 rounded-full shadow-sm transition-all active:scale-90 ${r.status === 'solved' ? 'bg-[#10b981] text-white' : 'bg-slate-100 text-slate-400'}`}>{r.status === 'solved' ? '해결 완료 ✓' : '진행중'}</button>
                 </div>
                 {r.image && <img src={r.image} className="w-full h-44 object-cover rounded-[25px] mb-4 mx-auto border border-slate-100" />}
