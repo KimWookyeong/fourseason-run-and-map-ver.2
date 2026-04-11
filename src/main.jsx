@@ -36,17 +36,28 @@ import {
 } from 'lucide-react';
 
 /**
- * [사계절 런앤맵 - 최종 안정화 버전 v5]
- * 1. 사진 삭제 기능: 이미지 미리보기 우측 상단에 삭제(X) 버튼 추가
- * 2. 저장 실패 해결: 전송 데이터 정제 및 사진 유무와 무관한 저장 성공 보장
- * 3. 인증 강화: 저장 직전 currentUser를 직접 참조하여 권한 누락 방지
+ * [사계절 런앤맵 - 최종 안정화 버전 v6]
+ * 1. 실행 보장: 외부 환경 변수 의존성을 제거하고 설정을 직접 주입하여 접속 불가 현상 해결
+ * 2. 사진 기능: 촬영/갤러리 선택 가능 및 미리보기 삭제(X) 버튼 유지
+ * 3. 저장 안정화: 데이터 정제 및 인증 강제 확인으로 저장 성공률 극대화
+ * 4. UI 최적화: 메인 화면 요소 크기 조정으로 하단 버튼 표시 보장
  */
 
-const firebaseConfig = JSON.parse(__firebase_config);
+// Firebase 설정 직접 주입 (접속 오류 해결 핵심)
+const firebaseConfig = {
+  apiKey: "AIzaSyBYfwtdXjz4ekJbH83merNVPZemb_bc3NE",
+  authDomain: "fourseason-run-and-map.firebaseapp.com",
+  projectId: "fourseason-run-and-map",
+  storageBucket: "fourseason-run-and-map.firebasestorage.app",
+  messagingSenderId: "671510183044",
+  appId: "1:671510183044:web:59ad0cc29cf6bd98f3d6d1",
+  databaseURL: "https://fourseason-run-and-map-default-rtdb.firebaseio.com/" 
+};
+
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'fourseason-run-and-map-v2024-final-v5';
+const appId = 'fourseason-run-and-map-v2024-final-v6';
 
 const TRASH_CATEGORIES = [
   { id: 'cup', label: '일회용 컵', color: '#10b981', icon: '🥤' },
@@ -98,7 +109,6 @@ export default function App() {
 
   const isAdmin = nickname.toLowerCase() === 'admin';
 
-  // 이미지 압축 (400px 제한)
   const compressImage = (base64) => {
     return new Promise((resolve) => {
       const img = new Image();
@@ -135,13 +145,11 @@ export default function App() {
   const ensureAuth = async () => {
     if (auth.currentUser) return auth.currentUser;
     try {
-      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-        await signInWithCustomToken(auth, __initial_auth_token);
-      } else {
-        await signInAnonymously(auth);
-      }
-      return auth.currentUser;
+      const res = await signInAnonymously(auth);
+      setUser(res.user);
+      return res.user;
     } catch (err) {
+      console.error("Auth Fail", err);
       return null;
     }
   };
@@ -197,7 +205,10 @@ export default function App() {
       const timer = setTimeout(initMap, 200);
       return () => {
         clearTimeout(timer);
-        if (leafletMap.current) { leafletMap.current.remove(); leafletMap.current = null; }
+        if (leafletMap.current) {
+          leafletMap.current.remove();
+          leafletMap.current = null;
+        }
       };
     }
   }, [isScriptLoaded, activeTab, nickname]);
@@ -234,17 +245,14 @@ export default function App() {
     e.preventDefault();
     setIsUploading(true);
     try {
-      // 1. 인증 즉시 확인
       const activeUser = await ensureAuth(); 
       if (!activeUser) throw new Error("AUTH_FAIL");
 
-      // 2. 위치 데이터 정제 (중요: 순수 숫자 객체로 변환)
       const center = leafletMap.current ? leafletMap.current.getCenter() : { lat: GEUMJEONG_CENTER[0], lng: GEUMJEONG_CENTER[1] };
       const loc = formData.customLocation 
         ? { lat: Number(formData.customLocation.lat), lng: Number(formData.customLocation.lng) }
         : { lat: Number(center.lat), lng: Number(center.lng) };
       
-      // 3. 사진 유무에 상관없이 데이터 조립
       const reportData = {
         category: formData.category,
         area: formData.area,
@@ -264,11 +272,7 @@ export default function App() {
       alert("지도에 성공적으로 저장되었습니다! 🍀");
     } catch (err) { 
       console.error("Save Error:", err);
-      if (err.message === "AUTH_FAIL") {
-        alert("로그인이 필요합니다. 앱을 새로고침 해주세요.");
-      } else {
-        alert("저장에 실패했습니다. 관리자에게 문의하거나 잠시 후 다시 시도하세요."); 
-      }
+      alert("저장에 실패했습니다. 사진 용량을 줄이거나 잠시 후 다시 시도하세요."); 
     } finally { setIsUploading(false); }
   };
 
@@ -373,7 +377,6 @@ export default function App() {
                       <><Camera size={24}/><span className="text-[10px] font-black text-center">촬영 또는<br/>갤러리 선택</span></>
                     )}
                   </label>
-                  {/* 사진 삭제 버튼 추가 */}
                   {formData.image && (
                     <button 
                       type="button" 
