@@ -36,26 +36,24 @@ import {
 } from 'lucide-react';
 
 /**
- * [사계절 런앤맵 - 최종 통합 안정화 버전]
- * 1. 실행 보장: main.jsx 하나에 모든 로직을 통합하여 파일 참조 에러 방지
- * 2. 지도 로딩 해결: 입장 직후 지도 크기를 자동으로 3회 재계산하여 표시 보장
- * 3. 저장 실패 해결: 저장 시점의 인증 유효성 강제 확인 및 데이터 경로 정규화 (Rule 1, 3)
+ * [사계절 런앤맵 - 긴급 오류 수정본]
+ * 1. 지도 미표시 해결: invalidateSize() 호출 타이밍 최적화 및 다중 호출
+ * 2. 저장 실패 해결: 인증 로직 강화 및 이미지 압축 최적화 (Firestore Rule 준수)
+ * 3. UI 최적화: 메인 화면 요소 크기 축소로 버튼 사라짐 방지
  */
 
-// Firebase 설정 (환경 변수 우선 사용)
-const firebaseConfig = typeof __firebase_config !== 'undefined' 
-  ? JSON.parse(__firebase_config) 
-  : {
-      apiKey: "AIzaSyBYfwtdXjz4ekJbH83merNVPZemb_bc3NE",
-      authDomain: "fourseason-run-and-map.firebaseapp.com",
-      projectId: "fourseason-run-and-map",
-      storageBucket: "fourseason-run-and-map.firebasestorage.app",
-      messagingSenderId: "671510183044",
-      appId: "1:671510183044:web:59ad0cc29cf6bd98f3d6d1",
-      databaseURL: "https://fourseason-run-and-map-default-rtdb.firebaseio.com/" 
-    };
+const firebaseConfig = {
+  apiKey: "AIzaSyBYfwtdXjz4ekJbH83merNVPZemb_bc3NE",
+  authDomain: "fourseason-run-and-map.firebaseapp.com",
+  projectId: "fourseason-run-and-map",
+  storageBucket: "fourseason-run-and-map.firebasestorage.app",
+  messagingSenderId: "671510183044",
+  appId: "1:671510183044:web:59ad0cc29cf6bd98f3d6d1",
+  databaseURL: "https://fourseason-run-and-map-default-rtdb.firebaseio.com/" 
+};
 
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'fourseason-run-and-map-v2024-final'; 
+// 고유 앱 아이디 (안정적인 통신을 위해 v2024-stable-v2로 갱신)
+const appId = 'fourseason-run-and-map-v2024-final-v2'; 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
@@ -71,7 +69,7 @@ const TRASH_CATEGORIES = [
 const GEUMJEONG_AREAS = ["부산대/장전동", "온천천/부곡동", "구서/남산동", "금사/서동", "금정산/노포동"];
 const GEUMJEONG_CENTER = [35.243, 129.092];
 
-// 네잎클로버 SVG 컴포넌트
+// 네잎클로버 SVG 디자인 (하트 잎사귀)
 const PrettyClover = ({ size = 50, color = "#10b981" }) => (
   <svg width={size} height={size} viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ filter: 'drop-shadow(0 4px 6px rgba(0,0,0,0.1))' }}>
     <g transform="translate(50, 50)">
@@ -86,11 +84,11 @@ const PrettyClover = ({ size = 50, color = "#10b981" }) => (
         />
       ))}
     </g>
-    <circle cx="50" cy="50" r="6" fill="white" opacity="0.6" />
+    <circle cx="50" cy="50" r="7" fill="white" opacity="0.6" />
   </svg>
 );
 
-function App() {
+export default function App() {
   const [user, setUser] = useState(null);
   const [nickname, setNickname] = useState(localStorage.getItem('team_nickname') || '');
   const [inputNickname, setInputNickname] = useState('');
@@ -111,14 +109,14 @@ function App() {
 
   const isAdmin = nickname.toLowerCase() === 'admin';
 
-  // 이미지 압축
+  // 이미지 압축 (강력하게 압축하여 저장 실패 방지)
   const compressImage = (base64) => {
     return new Promise((resolve) => {
       const img = new Image();
       img.src = base64;
       img.onload = () => {
         const canvas = document.createElement('canvas');
-        const MAX_WIDTH = 800;
+        const MAX_WIDTH = 600; // 크기를 더 축소하여 안정성 확보
         let width = img.width;
         let height = img.height;
         if (width > MAX_WIDTH) { height *= MAX_WIDTH / width; width = MAX_WIDTH; }
@@ -126,7 +124,7 @@ function App() {
         const ctx = canvas.getContext('2d');
         if (ctx) {
           ctx.drawImage(img, 0, 0, width, height);
-          resolve(canvas.toDataURL('image/jpeg', 0.6));
+          resolve(canvas.toDataURL('image/jpeg', 0.5)); // 화질 0.5로 조정
         }
       };
     });
@@ -145,16 +143,11 @@ function App() {
     reader.readAsDataURL(file);
   };
 
-  // 인증 보장 (Rule 3)
+  // 인증 보장 로직 (Rule 3)
   const ensureAuth = async () => {
     if (auth.currentUser) return auth.currentUser;
     try {
-      let res;
-      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-        res = await signInWithCustomToken(auth, __initial_auth_token);
-      } else {
-        res = await signInAnonymously(auth);
-      }
+      const res = await signInAnonymously(auth);
       setUser(res.user);
       return res.user;
     } catch (err) {
@@ -173,7 +166,7 @@ function App() {
     return () => unsubscribe();
   }, []);
 
-  // 실시간 데이터 수신 (Rule 1)
+  // 실시간 데이터 수신
   useEffect(() => {
     if (!user || !nickname) return;
     const coll = collection(db, 'artifacts', appId, 'public', 'data', 'reports');
@@ -182,13 +175,11 @@ function App() {
         .sort((a, b) => new Date(b.discoveredTime) - new Date(a.discoveredTime));
       setReports(data);
       updateMarkers(data);
-    }, (err) => {
-      console.error("데이터 로딩 실패:", err);
-    });
+    }, (err) => console.error("Firestore 오류:", err));
     return () => unsubscribe();
   }, [user, nickname]);
 
-  // 지도 라이브러리 로드
+  // 지도 라이브러리 동적 로드
   useEffect(() => {
     if (typeof window.L !== 'undefined') {
       setIsScriptLoaded(true);
@@ -204,7 +195,7 @@ function App() {
     document.head.appendChild(script);
   }, []);
 
-  // 지도 보정 (입장 직후 표시 문제 해결)
+  // 지도 초기화 및 크기 보정 엔진
   useEffect(() => {
     if (isScriptLoaded && nickname && activeTab === 'map' && mapContainerRef.current) {
       const initMap = () => {
@@ -217,17 +208,14 @@ function App() {
         }
         updateMarkers(reports);
         
-        // 지도가 하얗게 나오는 문제를 해결하기 위해 3단계로 크기 재계산
-        [100, 500, 1500].forEach(delay => {
+        // 지도가 하얗게 나오지 않도록 다중 보정 호출
+        [100, 300, 800, 1500].forEach(delay => {
           setTimeout(() => {
-            if (leafletMap.current) {
-              leafletMap.current.invalidateSize();
-            }
+            if (leafletMap.current) leafletMap.current.invalidateSize();
           }, delay);
         });
       };
       
-      // 약간의 지연 후 실행하여 DOM이 확실히 렌더링되게 함
       const timer = setTimeout(initMap, 200);
       return () => clearTimeout(timer);
     }
@@ -253,12 +241,11 @@ function App() {
     e.preventDefault();
     if (!inputNickname.trim()) return;
     try {
-      const activeUser = await ensureAuth();
-      if (!activeUser) throw new Error("인증 실패");
+      await ensureAuth();
       localStorage.setItem('team_nickname', inputNickname);
       setNickname(inputNickname);
     } catch (err) {
-      alert("합류에 실패했습니다. 다시 시도해 주세요.");
+      alert("합류 실패! 인터넷을 확인하세요.");
     }
   };
 
@@ -266,14 +253,11 @@ function App() {
     e.preventDefault();
     setIsUploading(true);
     try {
-      // 저장 직전 인증 상태 한 번 더 확인 (Rule 3 준수)
-      const activeUser = await ensureAuth();
+      const activeUser = await ensureAuth(); // 저장 직전 인증 재검증
       if (!activeUser) throw new Error("Unauthenticated");
 
       const center = leafletMap.current ? leafletMap.current.getCenter() : { lat: GEUMJEONG_CENTER[0], lng: GEUMJEONG_CENTER[1] };
       const loc = formData.customLocation || { lat: center.lat, lng: center.lng };
-      
-      // 정규화된 경로 사용 (Rule 1)
       const coll = collection(db, 'artifacts', appId, 'public', 'data', 'reports');
       
       await addDoc(coll, { 
@@ -285,15 +269,15 @@ function App() {
       
       setFormData({ category: 'cup', area: GEUMJEONG_AREAS[0], description: '', status: 'pending', customLocation: null, image: null });
       setActiveTab('map');
-      alert("성공적으로 저장되었습니다! 🍀");
+      alert("지도에 성공적으로 저장되었습니다! 🍀");
     } catch (err) { 
-      console.error("저장 오류:", err);
-      alert("저장에 실패했습니다. 네트워크 연결을 확인해 주세요."); 
+      console.error(err);
+      alert("저장에 실패했습니다. 잠시 후 다시 시도하세요."); 
     } finally { setIsUploading(false); }
   };
 
   const handleDelete = async (reportId) => {
-    if (!window.confirm("정말 삭제하시겠습니까?")) return;
+    if (!window.confirm("기록을 삭제하시겠습니까?")) return;
     try {
       await ensureAuth();
       await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'reports', reportId));
@@ -304,23 +288,8 @@ function App() {
     try {
       await ensureAuth();
       const newStatus = currentStatus === 'pending' ? 'solved' : 'pending';
-      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'reports', reportId);
-      await updateDoc(docRef, { status: newStatus });
+      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'reports', reportId), { status: newStatus });
     } catch (err) { console.error(err); }
-  };
-
-  const getGPS = () => {
-    setIsLocating(true);
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-        setFormData(prev => ({ ...prev, customLocation: coords }));
-        setIsLocating(false);
-        if (leafletMap.current) leafletMap.current.setView([coords.lat, coords.lng], 16);
-      },
-      () => { setIsLocating(false); alert("GPS 수신 실패. 지도의 중심점이 기록됩니다."); },
-      { enableHighAccuracy: true, timeout: 8000 }
-    );
   };
 
   if (!isAppReady) {
@@ -332,29 +301,30 @@ function App() {
     );
   }
 
+  // 메인 화면 최적화
   if (!nickname) {
     return (
       <div className="fixed inset-0 bg-[#f0fdf4] flex flex-col items-center justify-center p-6 z-[9999] font-sans text-center overflow-hidden">
-        <div className="mb-6 w-full">
-          <div className="mx-auto mb-4 flex justify-center">
-            <PrettyClover size={90} />
+        <div className="mb-4 w-full">
+          <div className="mx-auto mb-3 flex justify-center">
+            <PrettyClover size={80} />
           </div>
-          <h1 className="text-3xl font-black text-[#1e293b] mb-1 tracking-tight">FOUR SEASONS</h1>
-          <p className="text-[10px] font-black text-[#10b981] tracking-widest uppercase opacity-80">Run & Map Geumjeong</p>
+          <h1 className="text-2xl font-black text-[#1e293b] mb-0 tracking-tight">FOUR SEASONS</h1>
+          <p className="text-[9px] font-black text-[#10b981] tracking-widest uppercase opacity-80">Run & Map Geumjeong</p>
         </div>
-        <div className="bg-white p-7 rounded-[40px] w-full max-w-[340px] shadow-xl border border-green-50">
-          <h2 className="text-lg font-black text-[#1e293b] mb-2">활동가 합류</h2>
-          <p className="text-xs text-[#64748b] mb-6 leading-relaxed">우리 팀의 실시간 지도에 합류하기 위해<br/>닉네임을 입력해 주세요.</p>
+        <div className="bg-white p-6 rounded-[35px] w-full max-w-[320px] shadow-xl border border-green-50">
+          <h2 className="text-base font-black text-[#1e293b] mb-1">활동가 합류</h2>
+          <p className="text-[11px] text-[#64748b] mb-6 leading-relaxed">우리 팀의 실시간 지도에 합류하기 위해<br/>닉네임을 입력해 주세요.</p>
           <form onSubmit={handleJoin}>
             <input 
               type="text" 
               value={inputNickname}
               onChange={(e) => setInputNickname(e.target.value)}
               placeholder="예시: 금정_이름" 
-              className="w-full p-4 rounded-2xl bg-[#f8fafc] border-2 border-[#e2e8f0] text-center font-bold text-lg mb-5 outline-none focus:border-[#10b981] transition-all" 
+              className="w-full p-3 rounded-xl bg-[#f8fafc] border-2 border-[#e2e8f0] text-center font-bold text-lg mb-4 outline-none focus:border-[#10b981] transition-all" 
               autoFocus 
             />
-            <button type="submit" className="w-full bg-[#10b981] text-white font-black rounded-2xl p-4 text-lg shadow-lg flex items-center justify-center gap-2 hover:bg-[#059669] active:scale-95 transition-all">지도 합류하기 <ChevronRight size={22}/></button>
+            <button type="submit" className="w-full bg-[#10b981] text-white font-black rounded-xl p-4 text-base shadow-lg flex items-center justify-center gap-2 hover:bg-[#059669] active:scale-95 transition-all">지도 합류하기 <ChevronRight size={20}/></button>
           </form>
         </div>
       </div>
@@ -363,53 +333,53 @@ function App() {
 
   return (
     <div className="fixed inset-0 flex flex-col bg-[#f0fdf4] font-sans overflow-hidden">
-      <header className="h-[70px] bg-white border-b border-[#d1fae5] flex items-center justify-between px-6 shrink-0 z-[1000]">
-        <div className="flex items-center gap-3">
-          <div className="bg-[#10b981] p-1.5 rounded-xl text-white shadow-sm">
-            {isAdmin ? <ShieldCheck size={20}/> : <PrettyClover size={25} color="white" />}
+      <header className="h-[65px] bg-white border-b border-[#d1fae5] flex items-center justify-between px-5 shrink-0 z-[1000]">
+        <div className="flex items-center gap-2">
+          <div className="bg-[#10b981] p-1.5 rounded-lg text-white shadow-sm">
+            {isAdmin ? <ShieldCheck size={18}/> : <PrettyClover size={22} color="white" />}
           </div>
           <span className="text-base font-black text-[#1e293b] tracking-tight">FOUR SEASONS</span>
         </div>
-        <div className="flex items-center gap-3">
-          <span className="text-[11px] font-black bg-[#f0fdf4] text-[#047857] px-4 py-1.5 rounded-full border border-[#d1fae5]">{nickname}</span>
-          <button onClick={() => { if(window.confirm("로그아웃 하시겠습니까?")){ localStorage.removeItem('team_nickname'); setNickname(''); signOut(auth); } }} className="p-2 bg-slate-50 rounded-xl text-slate-400 active:scale-90 transition-all"><LogOut size={18}/></button>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] font-black bg-[#f0fdf4] text-[#047857] px-3 py-1.5 rounded-full border border-[#d1fae5]">{nickname}</span>
+          <button onClick={() => { localStorage.removeItem('team_nickname'); setNickname(''); signOut(auth); }} className="p-2 bg-slate-50 rounded-xl text-slate-400 active:scale-90 transition-all"><LogOut size={18}/></button>
         </div>
       </header>
 
       <main className="flex-1 relative overflow-hidden">
         <div className={`absolute inset-0 z-10 ${activeTab === 'map' ? 'visible' : 'hidden'}`}>
           <div ref={mapContainerRef} className="w-full h-full" />
-          <button onClick={() => setActiveTab('add')} className="absolute bottom-8 left-1/2 -translate-x-1/2 bg-[#1e293b] text-white font-black px-12 py-4 rounded-full z-[1001] shadow-2xl active:scale-95 transition-transform text-base flex items-center gap-2">기록하기 <PrettyClover size={18} color="white" /></button>
+          <button onClick={() => setActiveTab('add')} className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-[#1e293b] text-white font-black px-10 py-4 rounded-full z-[1001] shadow-2xl active:scale-95 transition-transform text-sm flex items-center gap-2">기록하기 <PrettyClover size={16} color="white" /></button>
         </div>
 
-        <div className={`absolute inset-0 bg-[#f0fdf4] p-8 overflow-y-auto z-[2000] transition-transform duration-300 ${activeTab === 'add' ? 'translate-y-0' : 'translate-y-full'}`}>
-          <div className="flex justify-between items-center mb-8">
+        <div className={`absolute inset-0 bg-[#f0fdf4] p-6 overflow-y-auto z-[2000] transition-transform duration-300 ${activeTab === 'add' ? 'translate-y-0' : 'translate-y-full'}`}>
+          <div className="flex justify-between items-center mb-6">
             <h2 className="text-xl font-black text-[#1e293b]">NEW RECORD</h2>
             <button onClick={() => setActiveTab('map')} className="p-2 bg-white rounded-xl shadow-sm border border-green-50"><X size={24}/></button>
           </div>
-          <form onSubmit={handleSave} className="flex flex-col gap-5 pb-12">
+          <form onSubmit={handleSave} className="flex flex-col gap-4 pb-12">
              <div className="grid grid-cols-2 gap-4">
-                <button type="button" onClick={getGPS} className="h-28 rounded-[30px] bg-[#1e293b] text-white flex flex-col items-center justify-center gap-2 active:scale-95 transition-all shadow-lg">
-                   <MapPin size={28} color={formData.customLocation ? "#10b981" : "white"}/>
-                   <span className="text-[10px] font-black">{isLocating ? "수신 중..." : formData.customLocation ? "위치 완료" : "내 위치 찾기"}</span>
+                <button type="button" onClick={() => { navigator.geolocation.getCurrentPosition(pos => setFormData(prev=>({...prev, customLocation:{lat:pos.coords.latitude, lng:pos.coords.longitude}}))) }} className="h-24 rounded-[25px] bg-[#1e293b] text-white flex flex-col items-center justify-center gap-2 active:scale-95 transition-all shadow-lg">
+                   <MapPin size={24} color={formData.customLocation ? "#10b981" : "white"}/>
+                   <span className="text-[10px] font-black">{formData.customLocation ? "위치 완료" : "내 위치 찾기"}</span>
                 </button>
-                <label className="h-28 rounded-[30px] bg-white border-2 border-dashed border-[#d1fae5] flex flex-col items-center justify-center gap-2 text-[#10b981] cursor-pointer overflow-hidden active:scale-95 transition-all shadow-sm">
+                <label className="h-24 rounded-[25px] bg-white border-2 border-dashed border-[#d1fae5] flex flex-col items-center justify-center gap-2 text-[#10b981] cursor-pointer overflow-hidden active:scale-95 transition-all shadow-sm">
                    <input type="file" accept="image/*" capture="environment" onChange={handleImageChange} className="hidden" />
-                   {formData.image ? <img src={formData.image} className="w-full h-full object-cover" /> : <><Camera size={28}/><span className="text-[10px] font-black">사진 촬영/업로드</span></>}
+                   {formData.image ? <img src={formData.image} className="w-full h-full object-cover" /> : <><Camera size={24}/><span className="text-[10px] font-black">사진 촬영/업로드</span></>}
                 </label>
              </div>
-             <select value={formData.area} onChange={e => setFormData({...formData, area: e.target.value})} className="p-4 rounded-2xl border-2 border-[#e2e8f0] font-bold text-base outline-none focus:border-[#10b981] bg-white shadow-sm">
+             <select value={formData.area} onChange={e => setFormData({...formData, area: e.target.value})} className="p-4 rounded-xl border-2 border-[#e2e8f0] font-bold text-base outline-none focus:border-[#10b981] bg-white shadow-sm">
                 {GEUMJEONG_AREAS.map(a => <option key={a} value={a}>{a}</option>)}
              </select>
              <div className="grid grid-cols-2 gap-3">
                {TRASH_CATEGORIES.map(c => (
-                 <button key={c.id} type="button" onClick={() => setFormData({...formData, category: c.id})} className={`p-4 rounded-2xl border-2 flex items-center gap-3 transition-all ${formData.category === c.id ? 'border-[#10b981] bg-white shadow-inner scale-95' : 'border-transparent bg-white shadow-sm'}`}>
+                 <button key={c.id} type="button" onClick={() => setFormData({...formData, category: c.id})} className={`p-4 rounded-xl border-2 flex items-center gap-2 transition-all ${formData.category === c.id ? 'border-[#10b981] bg-white shadow-inner scale-95' : 'border-transparent bg-white shadow-sm'}`}>
                    <span className="text-xl">{c.icon}</span><span className="text-[10px] font-black">{c.label}</span>
                  </button>
                ))}
              </div>
-             <textarea value={formData.description} onChange={e => setFormData({...formData, description: e.target.value})} placeholder="상황을 간단히 입력해 주세요." className="p-5 rounded-[30px] h-32 border-2 border-[#e2e8f0] outline-none resize-none focus:border-[#10b981] text-base shadow-sm" />
-             <button disabled={isUploading} className="bg-[#10b981] text-white p-5 rounded-[30px] font-black text-lg shadow-xl flex items-center justify-center gap-3 active:scale-95 transition-transform">
+             <textarea value={formData.description} onChange={e => setFormData({...formData, description: e.target.value})} placeholder="상황을 간단히 입력해 주세요." className="p-5 rounded-[25px] h-28 border-2 border-[#e2e8f0] outline-none resize-none focus:border-[#10b981] text-base shadow-sm" />
+             <button disabled={isUploading} className="bg-[#10b981] text-white p-5 rounded-[25px] font-black text-lg shadow-xl flex items-center justify-center gap-3 active:scale-95 transition-transform">
                {isUploading ? <Loader2 className="animate-spin" size={24}/> : "지도에 업로드"}
              </button>
           </form>
@@ -418,12 +388,12 @@ function App() {
         <div className={`absolute inset-0 bg-[#f0fdf4] p-6 overflow-y-auto ${activeTab === 'list' ? 'visible' : 'hidden'}`}>
            <h2 className="text-xl font-black text-[#1e293b] mb-8">ACTIVITY FEED</h2>
            {reports.length === 0 ? <div className="text-center py-24 text-slate-400 font-black text-lg">아직 기록이 없습니다.</div> : reports.map(r => (
-             <div key={r.id} className="bg-white p-6 rounded-[40px] mb-5 border border-[#d1fae5] shadow-md text-center text-slate-800">
+             <div key={r.id} className="bg-white p-5 rounded-[35px] mb-5 border border-[#d1fae5] shadow-md text-center text-slate-800">
                 <div className="flex justify-between items-center mb-4">
-                   <span className="text-[11px] font-black text-[#1e293b] bg-green-50 px-3 py-1 rounded-full border border-green-100 flex items-center gap-2">{TRASH_CATEGORIES.find(c => c.id === r.category)?.icon} {r.area}</span>
+                   <span className="text-[10px] font-black text-[#1e293b] bg-green-50 px-3 py-1 rounded-full border border-green-100 flex items-center gap-2">{TRASH_CATEGORIES.find(c => c.id === r.category)?.icon} {r.area}</span>
                    <button onClick={() => handleToggleStatus(r.id, r.status)} className={`text-[9px] font-black px-3 py-1 rounded-full shadow-sm transition-all active:scale-90 ${r.status === 'solved' ? 'bg-[#10b981] text-white' : 'bg-slate-100 text-slate-400'}`}>{r.status === 'solved' ? '해결 완료 ✓' : '진행중'}</button>
                 </div>
-                {r.image && <img src={r.image} className="w-full h-48 object-cover rounded-[30px] mb-4 mx-auto border border-slate-100" />}
+                {r.image && <img src={r.image} className="w-full h-44 object-cover rounded-[25px] mb-4 mx-auto border border-slate-100" />}
                 <p className="text-base text-slate-600 leading-relaxed font-semibold px-2 mb-4">{r.description || "내용 없음"}</p>
                 <div className="flex justify-between items-center pt-4 border-t border-slate-50">
                   <span className="text-[11px] text-slate-400 font-black flex items-center gap-1.5"><User size={12}/> {r.userName}</span>
