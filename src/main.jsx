@@ -17,7 +17,8 @@ import {
   deleteDoc, 
   onSnapshot,
   getDocs,
-  writeBatch
+  writeBatch,
+  query
 } from 'firebase/firestore';
 import { 
   MapPin, 
@@ -36,28 +37,32 @@ import {
 } from 'lucide-react';
 
 /**
- * [사계절 런앤맵 - 최종 안정화 버전 v7]
- * 1. 저장 실패 완전 해결: 이미지 최대 크기를 300px로 대폭 축소하여 1MB 제한 엄격 준수
- * 2. 전송 최적화: Firestore에 전송되는 데이터 객체에서 불필요한 필드 제거
- * 3. 경로 갱신: appId를 v7으로 업데이트하여 기존 데이터 충돌 방지
- * 4. UX 개선: 사진 삭제(X) 버튼 및 업로드 진행 상태 표시 강화
+ * [사계절 런앤맵 - 데이터 저장 및 공유 복구 버전 v8]
+ * 1. 데이터 공유 해결: 시스템 제공 appId를 우선 사용하여 모든 사용자 간 데이터 동기화 보장 (Rule 1)
+ * 2. 저장 실패 해결: 저장 직전 Auth 상태 강제 확보 및 비동기 처리 최적화 (Rule 3)
+ * 3. 관리자 모드: admin 닉네임 사용 시 전역 관리 권한(삭제, 초기화) 활성화
+ * 4. 이미지 압축: 320px 해상도 및 0.3 화질로 압축하여 1MB 전송 제한 철저 준수
  */
 
-const firebaseConfig = {
-  apiKey: "AIzaSyBYfwtdXjz4ekJbH83merNVPZemb_bc3NE",
-  authDomain: "fourseason-run-and-map.firebaseapp.com",
-  projectId: "fourseason-run-and-map",
-  storageBucket: "fourseason-run-and-map.firebasestorage.app",
-  messagingSenderId: "671510183044",
-  appId: "1:671510183044:web:59ad0cc29cf6bd98f3d6d1",
-  databaseURL: "https://fourseason-run-and-map-default-rtdb.firebaseio.com/" 
-};
+// 시스템 환경 변수 및 설정 (환경 변수 우선 순위 적용)
+const firebaseConfig = typeof __firebase_config !== 'undefined' 
+  ? JSON.parse(__firebase_config) 
+  : {
+      apiKey: "AIzaSyBYfwtdXjz4ekJbH83merNVPZemb_bc3NE",
+      authDomain: "fourseason-run-and-map.firebaseapp.com",
+      projectId: "fourseason-run-and-map",
+      storageBucket: "fourseason-run-and-map.firebasestorage.app",
+      messagingSenderId: "671510183044",
+      appId: "1:671510183044:web:59ad0cc29cf6bd98f3d6d1",
+      databaseURL: "https://fourseason-run-and-map-default-rtdb.firebaseio.com/" 
+    };
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-// 새로운 데이터 경로로 갱신하여 오류 해결
-const appId = 'fourseason-run-and-map-v2024-final-v7';
+
+// Rule 1 준수를 위해 시스템 appId 우선 사용
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'fourseason-run-and-map-shared-v8';
 
 const TRASH_CATEGORIES = [
   { id: 'cup', label: '일회용 컵', color: '#10b981', icon: '🥤' },
@@ -109,14 +114,13 @@ export default function App() {
 
   const isAdmin = nickname.toLowerCase() === 'admin';
 
-  // 이미지 압축 알고리즘 강화 (저장 실패 해결 핵심)
+  // 이미지 압축 (Firestore 1MB 한계 돌파를 위한 초고압축)
   const compressImage = (base64) => {
     return new Promise((resolve) => {
       const img = new Image();
       img.src = base64;
       img.onload = () => {
         const canvas = document.createElement('canvas');
-        // 용량 확보를 위해 최대 해상도를 320px로 과감하게 제한
         const MAX_WIDTH = 320; 
         let width = img.width;
         let height = img.height;
@@ -125,7 +129,6 @@ export default function App() {
         const ctx = canvas.getContext('2d');
         if (ctx) {
           ctx.drawImage(img, 0, 0, width, height);
-          // 화질을 0.3으로 설정하여 용량을 최소화 (성공률 100% 목표)
           resolve(canvas.toDataURL('image/jpeg', 0.3)); 
         }
       };
@@ -145,28 +148,38 @@ export default function App() {
     reader.readAsDataURL(file);
   };
 
+  // 인증 보장 로직 (저장 성공을 위한 필수 관문)
   const ensureAuth = async () => {
     if (auth.currentUser) return auth.currentUser;
     try {
-      const res = await signInAnonymously(auth);
+      let res;
+      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+        res = await signInWithCustomToken(auth, __initial_auth_token);
+      } else {
+        res = await signInAnonymously(auth);
+      }
       setUser(res.user);
       return res.user;
     } catch (err) {
-      console.error("Auth Fail", err);
+      console.error("인증 실패:", err);
       return null;
     }
   };
 
+  // 초기 부팅 및 실시간 데이터 바인딩
   useEffect(() => {
-    const bootApp = async () => {
+    const initApp = async () => {
       await ensureAuth();
       setIsAppReady(true);
     };
-    bootApp();
-    const unsubscribe = onAuthStateChanged(auth, setUser);
+    initApp();
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+    });
     return () => unsubscribe();
   }, []);
 
+  // 모든 사용자 데이터 실시간 공유 (공통 경로 사용)
   useEffect(() => {
     if (!user || !nickname) return;
     const coll = collection(db, 'artifacts', appId, 'public', 'data', 'reports');
@@ -175,10 +188,13 @@ export default function App() {
         .sort((a, b) => new Date(b.discoveredTime) - new Date(a.discoveredTime));
       setReports(data);
       updateMarkers(data);
-    }, (err) => console.error("Data Load Error", err));
+    }, (error) => {
+      console.error("Firestore Listen Error:", error);
+    });
     return () => unsubscribe();
   }, [user, nickname]);
 
+  // 지도 라이브러리 로드
   useEffect(() => {
     if (typeof window.L !== 'undefined') {
       setIsScriptLoaded(true);
@@ -193,6 +209,7 @@ export default function App() {
     document.head.appendChild(script);
   }, []);
 
+  // 지도 인스턴스 관리
   useEffect(() => {
     if (isScriptLoaded && nickname && activeTab === 'map' && mapContainerRef.current) {
       const initMap = () => {
@@ -248,37 +265,39 @@ export default function App() {
     e.preventDefault();
     setIsUploading(true);
     try {
-      // 1. 저장 직전 인증 강제 재확인 (Rule 3)
+      // 1. 세션 만료 방지를 위한 강제 인증 재확인 (Rule 3)
       const activeUser = await ensureAuth(); 
-      if (!activeUser) throw new Error("인증 세션 만료");
+      if (!activeUser) throw new Error("인증 권한 없음");
 
-      // 2. 위치 데이터 정밀 정제
+      // 2. 위치 데이터 확보
       const center = leafletMap.current ? leafletMap.current.getCenter() : { lat: GEUMJEONG_CENTER[0], lng: GEUMJEONG_CENTER[1] };
-      const lat = formData.customLocation ? Number(formData.customLocation.lat) : Number(center.lat);
-      const lng = formData.customLocation ? Number(formData.customLocation.lng) : Number(center.lng);
+      const loc = formData.customLocation 
+        ? { lat: Number(formData.customLocation.lat), lng: Number(formData.customLocation.lng) }
+        : { lat: Number(center.lat), lng: Number(center.lng) };
       
-      // 3. 최종 데이터 조립 (불필요한 필드 삭제로 용량 최소화)
+      // 3. 기록 객체 조립
       const reportData = {
         category: formData.category,
         area: formData.area,
-        description: formData.description.slice(0, 500) || "", // 텍스트 길이 제한
+        description: formData.description.trim() || "내용 없음",
         status: "pending",
         userName: nickname,
         discoveredTime: new Date().toISOString(),
-        location: { lat, lng },
-        image: formData.image || null
+        location: loc,
+        image: formData.image || null,
+        uid: activeUser.uid // 관리 및 필터링을 위한 고유 ID
       };
 
-      // 4. Firestore 전송 (Rule 1)
+      // 4. Firestore 공유 경로에 저장 (Rule 1)
       const coll = collection(db, 'artifacts', appId, 'public', 'data', 'reports');
       await addDoc(coll, reportData);
       
       setFormData({ category: 'cup', area: GEUMJEONG_AREAS[0], description: '', status: 'pending', customLocation: null, image: null });
       setActiveTab('map');
-      alert("지도에 성공적으로 저장되었습니다! 🍀");
+      alert("성공적으로 저장되어 팀원들과 공유되었습니다! 🍀");
     } catch (err) { 
-      console.error("Save Error Detail:", err);
-      alert("저장 실패! 사진 없이 다시 시도하거나 네트워크를 확인해 주세요."); 
+      console.error("기록 저장 중 오류:", err);
+      alert("데이터 전송 실패: 사진을 삭제하고 다시 시도하거나 네트워크를 확인해 주세요."); 
     } finally { setIsUploading(false); }
   };
 
@@ -298,11 +317,26 @@ export default function App() {
     } catch (err) { console.error(err); }
   };
 
+  const clearAllData = async () => {
+    if (!isAdmin) return;
+    if (window.confirm("🚨 관리자 경고: 전체 활동 데이터를 초기화하시겠습니까?")) {
+      try {
+        await ensureAuth();
+        const coll = collection(db, 'artifacts', appId, 'public', 'data', 'reports');
+        const snap = await getDocs(coll);
+        const batch = writeBatch(db);
+        snap.docs.forEach((d) => batch.delete(d.ref));
+        await batch.commit();
+        alert("모든 데이터가 초기화되었습니다.");
+      } catch (err) { alert("초기화 권한 부족"); }
+    }
+  };
+
   if (!isAppReady) {
     return (
       <div className="fixed inset-0 bg-[#f0fdf4] flex flex-col items-center justify-center">
         <Loader2 className="animate-spin text-[#10b981]" size={50} />
-        <p className="mt-4 font-black text-[#10b981] text-lg">사계절 앱 연결 중...</p>
+        <p className="mt-4 font-black text-[#10b981] text-lg">사계절 앱 동기화 중...</p>
       </div>
     );
   }
@@ -439,6 +473,13 @@ export default function App() {
               <div className="bg-white p-8 rounded-[40px] text-center border border-green-50 shadow-lg"><p className="text-[10px] font-black text-slate-400 mb-1 uppercase tracking-tighter">Solved</p><p className="text-3xl font-black text-[#10b981]">{reports.filter(r=>r.status==='solved').length}</p></div>
               <div className="bg-white p-8 rounded-[40px] text-center border border-green-50 shadow-lg"><p className="text-[10px] font-black text-slate-400 mb-1 uppercase tracking-tighter">Pending</p><p className="text-3xl font-black text-slate-800">{reports.filter(r=>r.status!=='solved').length}</p></div>
            </div>
+           {isAdmin && (
+             <div className="bg-white p-10 rounded-[40px] border-2 border-dashed border-red-100 text-center shadow-md animate-pulse">
+                <h4 className="text-red-500 font-black mb-2 flex items-center justify-center gap-2"><AlertTriangle size={20}/> ADMIN TOOLS</h4>
+                <p className="text-[10px] text-[#047857] opacity-60 mb-6 font-bold">관리자 권한으로 전체 데이터를<br/>영구히 삭제할 수 있습니다.</p>
+                <button onClick={clearAllData} className="w-full bg-red-500 text-white p-4 rounded-2xl font-black shadow-lg active:scale-95 transition-transform">데이터 전체 초기화</button>
+             </div>
+           )}
         </div>
       </main>
 
