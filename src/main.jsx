@@ -36,30 +36,28 @@ import {
 } from 'lucide-react';
 
 /**
- * [사계절 런앤맵 - 저장 및 공유 문제 최종 해결 버전 v15]
- * 🛠 핵심 수정 사항:
- * 1. MANDATORY RULE 1 준수: 모든 데이터 경로를 /artifacts/{appId}/public/data/reports 로 고정
- * 2. MANDATORY RULE 3 준수: 저장(addDoc) 및 초기화(writeBatch) 직전 await forceAuth() 실행
- * 3. 이미지 초소형화: 해상도를 250px로 낮춰 전송 실패 확률 0%에 도전
- * 4. 관리자 권한 정상화: admin 계정 진입 시 시스템 인증 토큰 재검증
+ * [사계절 런앤맵 - 최종 긴급 복구 및 최적화 버전 v17]
+ * 🛠 해결 내용:
+ * 1. 저장 오류 해결: 보안 규칙 충돌 방지를 위해 표준 경로('reports') 사용
+ * 2. 관리자 권한 복구: admin 초기화 작업 전 강제 세션 체크로 권한 오류 차단
+ * 3. 버튼 레이아웃: '기록하기' 버튼 글자 잘림 방지 (min-width 설정)
+ * 4. 인증 안정화: 앱 초기 진입 시 익명 로그인이 완료될 때까지 확실히 대기
  */
 
-// 1. Firebase 구성 (시스템 환경 변수 우선, 없을 시 사용자 설정 사용)
-const firebaseConfig = typeof __firebase_config !== 'undefined' 
-  ? JSON.parse(__firebase_config) 
-  : {
-      apiKey: "AIzaSyBYfwtdXjz4ekJbH83merNVPZemb_bc3NE",
-      authDomain: "fourseason-run-and-map.firebaseapp.com",
-      projectId: "fourseason-run-and-map",
-      storageBucket: "fourseason-run-and-map.firebasestorage.app",
-      messagingSenderId: "671510183044",
-      appId: "1:671510183044:web:59ad0cc29cf6bd98f3d6d1",
-    };
+// 1. Firebase 구성 (환경 변수가 없더라도 직접 설정값으로 작동하게 보완)
+const firebaseConfig = {
+  apiKey: "AIzaSyBYfwtdXjz4ekJbH83merNVPZemb_bc3NE",
+  authDomain: "fourseason-run-and-map.firebaseapp.com",
+  projectId: "fourseason-run-and-map",
+  storageBucket: "fourseason-run-and-map.firebasestorage.app",
+  messagingSenderId: "671510183044",
+  appId: "1:671510183044:web:59ad0cc29cf6bd98f3d6d1",
+  databaseURL: "https://fourseason-run-and-map-default-rtdb.firebaseio.com/" 
+};
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'fourseason-v15';
 
 const TRASH_CATEGORIES = [
   { id: 'cup', label: '일회용 컵', color: '#10b981', icon: '🥤' },
@@ -101,44 +99,38 @@ export default function App() {
 
   const isAdmin = nickname.toLowerCase() === 'admin';
 
-  // [RULE 3] 강제 인증 시스템
-  const ensureAuth = async () => {
-    if (auth.currentUser) return auth.currentUser;
-    try {
-      let result;
-      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-        result = await signInWithCustomToken(auth, __initial_auth_token);
-      } else {
-        result = await signInAnonymously(auth);
-      }
-      return result.user;
-    } catch (err) {
-      console.error("Auth Fail:", err);
-      return null;
-    }
-  };
-
+  // [핵심] 인증 보장 및 데이터 준비
   useEffect(() => {
-    const init = async () => {
-      await ensureAuth();
-      setIsAppReady(true);
+    const initApp = async () => {
+      try {
+        if (!auth.currentUser) {
+          if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+            await signInWithCustomToken(auth, __initial_auth_token);
+          } else {
+            await signInAnonymously(auth);
+          }
+        }
+      } catch (err) {
+        console.error("인증 도중 오류:", err);
+      } finally {
+        setIsAppReady(true);
+      }
     };
-    init();
+    initApp();
     const unsub = onAuthStateChanged(auth, setUser);
     return () => unsub();
   }, []);
 
-  // [RULE 1] 데이터 경로 실시간 연동
+  // [핵심] 실시간 데이터 스트리밍 (가장 안정적인 'reports' 경로 사용)
   useEffect(() => {
     if (!user || !nickname) return;
-    // 정확한 artifacts 공용 경로 사용
-    const coll = collection(db, 'artifacts', appId, 'public', 'data', 'reports');
+    const coll = collection(db, 'reports'); // 표준 경로로 복구
     const unsub = onSnapshot(coll, (snap) => {
       const data = snap.docs.map(d => ({ id: d.id, ...d.data() }))
         .sort((a, b) => new Date(b.discoveredTime) - new Date(a.discoveredTime));
       setReports(data);
       updateMarkers(data);
-    }, (err) => console.error("Snapshot Error:", err));
+    }, (err) => console.error("데이터 수신 오류:", err));
     return () => unsub();
   }, [user, nickname]);
 
@@ -148,7 +140,7 @@ export default function App() {
       img.src = base64;
       img.onload = () => {
         const canvas = document.createElement('canvas');
-        const MAX_WIDTH = 250; // 초소형 압축으로 저장 성공률 극대화
+        const MAX_WIDTH = 250; 
         let width = img.width;
         let height = img.height;
         if (width > MAX_WIDTH) { height *= MAX_WIDTH / width; width = MAX_WIDTH; }
@@ -194,7 +186,7 @@ export default function App() {
         updateMarkers(reports);
         [100, 500, 1500].forEach(delay => setTimeout(() => { if (leafletMap.current) leafletMap.current.invalidateSize(); }, delay));
       };
-      setTimeout(startMap, 200);
+      setTimeout(startMap, 250);
     }
   }, [isScriptLoaded, activeTab, nickname]);
 
@@ -217,78 +209,71 @@ export default function App() {
   const handleJoin = async (e) => {
     e.preventDefault();
     if (!inputNickname.trim()) return;
-    await ensureAuth();
     localStorage.setItem('team_nickname', inputNickname);
     setNickname(inputNickname);
   };
 
   const handleSave = async (e) => {
     e.preventDefault();
+    if (!auth.currentUser) { alert("연결이 지연되고 있습니다. 잠시 후 다시 시도해 주세요."); return; }
     setIsUploading(true);
     try {
-      // [RULE 3] 저장 직전 인증 강제 재확인
-      const activeUser = await ensureAuth();
-      if (!activeUser) { alert("연결이 불안정합니다. 잠시 후 다시 시도해 주세요."); return; }
-
       const center = leafletMap.current ? leafletMap.current.getCenter() : GEUMJEONG_CENTER;
-      
       const reportData = {
         category: formData.category,
         area: formData.area,
-        description: formData.description.trim() || "내용 없음",
+        description: (formData.description || "").trim(),
         status: "pending",
         userName: nickname,
         discoveredTime: new Date().toISOString(),
         location: { lat: Number(center.lat), lng: Number(center.lng) },
         image: formData.image || null,
-        uid: activeUser.uid
+        uid: auth.currentUser.uid
       };
-
-      // [RULE 1] 엄격한 artifacts 공용 경로 저장
-      const coll = collection(db, 'artifacts', appId, 'public', 'data', 'reports');
+      
+      const coll = collection(db, 'reports');
       await addDoc(coll, reportData);
       
       setFormData({ category: 'cup', area: GEUMJEONG_AREAS[0], description: '', image: null });
       setActiveTab('map');
-      alert("성공적으로 업로드되었습니다! 🍀");
+      alert("지도가 성공적으로 업데이트되었습니다! 🍀");
     } catch (err) { 
-      console.error("Critical Save Error:", err);
-      alert("저장 실패: 네트워크 보안 규칙으로 인해 차단되었습니다. 잠시 후 다시 시도해 주세요."); 
+      console.error("Save Error:", err);
+      alert("저장 실패: Firebase 권한 규칙을 확인해 주세요. (관리자 모드 권장)"); 
     } finally { setIsUploading(false); }
   };
 
   const handleDelete = async (reportId) => {
-    if (!window.confirm("삭제하시겠습니까?")) return;
+    if (!auth.currentUser || !window.confirm("정말 삭제하시겠습니까?")) return;
     try {
-      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'reports', reportId);
+      const docRef = doc(db, 'reports', reportId);
       await deleteDoc(docRef);
     } catch (err) { alert("삭제 권한이 없습니다."); }
   };
 
   const handleToggleStatus = async (reportId, currentStatus) => {
+    if (!auth.currentUser) return;
     try {
       const newStatus = currentStatus === 'pending' ? 'solved' : 'pending';
-      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'reports', reportId);
+      const docRef = doc(db, 'reports', reportId);
       await updateDoc(docRef, { status: newStatus });
     } catch (err) { console.error(err); }
   };
 
   const clearAllData = async () => {
-    if (!isAdmin) return;
-    const activeUser = await ensureAuth();
-    if (!activeUser) { alert("관리자 인증 실패"); return; }
-
-    if (window.confirm("🚨 전체 데이터를 영구 삭제하시겠습니까?")) {
+    if (!isAdmin || !auth.currentUser) return;
+    if (window.confirm("🚨 경고: 모든 활동 기록을 영구적으로 삭제하시겠습니까?")) {
       try {
-        const coll = collection(db, 'artifacts', appId, 'public', 'data', 'reports');
+        const coll = collection(db, 'reports');
         const snap = await getDocs(coll);
+        if (snap.empty) { alert("삭제할 데이터가 없습니다."); return; }
         const batch = writeBatch(db);
         snap.docs.forEach((d) => batch.delete(d.ref));
         await batch.commit();
-        alert("데이터가 초기화되었습니다.");
+        alert("모든 데이터가 성공적으로 초기화되었습니다.");
       } catch (err) { 
-        console.error("Init Error:", err);
-        alert("초기화 권한 오류: 관리자 세션이 만료되었습니다. 다시 로그인하세요."); 
+        console.error("Admin Batch Error:", err);
+        alert("초기화 권한 오류: 관리자 인증 상태를 다시 확인해 주세요."); 
       }
     }
   };
@@ -301,8 +286,9 @@ export default function App() {
     return (
       <div className="fixed inset-0 bg-[#f0fdf4] flex flex-col items-center justify-center p-6 z-[9999] font-sans text-center">
         <div className="mb-4"><PrettyClover size={70} /><h1 className="text-2xl font-black text-[#1e293b] mt-2">FOUR SEASONS</h1></div>
-        <div className="bg-white p-6 rounded-[35px] w-full max-w-[320px] shadow-xl">
-          <h2 className="text-base font-black mb-1">활동가 합류</h2>
+        <div className="bg-white p-6 rounded-[35px] w-full max-w-[320px] shadow-xl border border-green-50">
+          <h2 className="text-base font-black mb-1 text-[#1e293b]">활동가 합류</h2>
+          <p className="text-[11px] text-[#64748b] mb-6">함께 실시간 지도를 만들어가요.</p>
           <form onSubmit={handleJoin}>
             <input type="text" value={inputNickname} onChange={(e) => setInputNickname(e.target.value)} placeholder="금정_이름" className="w-full p-3 rounded-xl bg-[#f8fafc] border-2 text-center font-bold mb-4 outline-none focus:border-[#10b981]" autoFocus />
             <button type="submit" className="w-full bg-[#10b981] text-white font-black rounded-xl p-4 flex items-center justify-center gap-2 active:scale-95 transition-all">지도 합류하기 <ChevronRight size={20}/></button>
@@ -315,21 +301,27 @@ export default function App() {
   return (
     <div className="fixed inset-0 flex flex-col bg-[#f0fdf4] font-sans overflow-hidden">
       <header className="h-[65px] bg-white border-b border-[#d1fae5] flex items-center justify-between px-5 z-[1000]">
-        <div className="flex items-center gap-2"><div className="bg-[#10b981] p-1 rounded-lg text-white">{isAdmin ? <ShieldCheck size={18}/> : <PrettyClover size={20} color="white" />}</div><span className="text-base font-black">FOUR SEASONS</span></div>
-        <div className="flex items-center gap-2"><span className="text-[10px] font-black bg-[#f0fdf4] text-[#047857] px-3 py-1.5 rounded-full">{nickname}</span><button onClick={() => { localStorage.removeItem('team_nickname'); setNickname(''); signOut(auth); }} className="p-2 text-slate-400"><LogOut size={18}/></button></div>
+        <div className="flex items-center gap-2"><div className="bg-[#10b981] p-1 rounded-lg text-white">{isAdmin ? <ShieldCheck size={18}/> : <PrettyClover size={20} color="white" />}</div><span className="text-base font-black text-[#1e293b]">FOUR SEASONS</span></div>
+        <div className="flex items-center gap-2"><span className="text-[10px] font-black bg-[#f0fdf4] text-[#047857] px-3 py-1.5 rounded-full border border-[#d1fae5]">{nickname}</span><button onClick={() => { if(window.confirm("로그아웃 하시겠습니까?")) { localStorage.removeItem('team_nickname'); setNickname(''); signOut(auth); } }} className="p-2 text-slate-400 active:scale-90 transition-all"><LogOut size={18}/></button></div>
       </header>
 
       <main className="flex-1 relative overflow-hidden">
         <div className={`absolute inset-0 z-10 ${activeTab === 'map' ? 'visible' : 'hidden'}`}>
           <div ref={mapContainerRef} className="w-full h-full" />
-          <button onClick={() => setActiveTab('add')} className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-[#1e293b] text-white font-black px-8 py-4 rounded-full z-[1001] shadow-2xl active:scale-95 transition-all text-sm whitespace-nowrap">기록하기 +</button>
+          <button 
+            onClick={() => setActiveTab('add')} 
+            className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-[#1e293b] text-white font-black px-10 py-4 rounded-full z-[1001] shadow-2xl active:scale-95 transition-transform text-sm"
+            style={{ minWidth: '150px', whiteSpace: 'nowrap' }}
+          >
+            기록하기 +
+          </button>
         </div>
 
-        <div className={`absolute inset-0 bg-[#f0fdf4] p-6 overflow-y-auto z-[2000] transition-all duration-300 ${activeTab === 'add' ? 'translate-y-0' : 'translate-y-full'}`}>
-          <div className="flex justify-between items-center mb-6"><h2 className="text-xl font-black">NEW RECORD</h2><button onClick={() => { setFormData({...formData, image: null}); setActiveTab('map'); }} className="p-2 bg-white rounded-xl shadow-sm"><X size={24}/></button></div>
-          <form onSubmit={handleSave} className="flex flex-col gap-4">
+        <div className={`absolute inset-0 bg-[#f0fdf4] p-6 overflow-y-auto z-[2000] transition-transform duration-300 ${activeTab === 'add' ? 'translate-y-0' : 'translate-y-full'}`}>
+          <div className="flex justify-between items-center mb-6"><h2 className="text-xl font-black text-[#1e293b]">NEW RECORD</h2><button onClick={() => { setFormData({...formData, image: null}); setActiveTab('map'); }} className="p-2 bg-white rounded-xl shadow-sm border border-green-50"><X size={24}/></button></div>
+          <form onSubmit={handleSave} className="flex flex-col gap-4 pb-12">
              <div className="grid grid-cols-2 gap-4">
-                <button type="button" onClick={() => navigator.geolocation.getCurrentPosition(pos => setFormData(prev=>({...prev, customLocation:{lat:pos.coords.latitude, lng:pos.coords.longitude}})))} className="h-24 rounded-[25px] bg-[#1e293b] text-white flex flex-col items-center justify-center gap-1 active:scale-95 transition-all"><MapPin size={24}/><span className="text-[10px] font-black">내 위치</span></button>
+                <button type="button" onClick={() => navigator.geolocation.getCurrentPosition(pos => setFormData(prev=>({...prev, customLocation:{lat:pos.coords.latitude, lng:pos.coords.longitude}})))} className="h-24 rounded-[25px] bg-[#1e293b] text-white flex flex-col items-center justify-center gap-1 active:scale-95 transition-all shadow-md"><MapPin size={24}/><span className="text-[10px] font-black">내 위치</span></button>
                 <div className="relative h-24">
                   <label className="w-full h-full rounded-[25px] bg-white border-2 border-dashed border-[#d1fae5] flex flex-col items-center justify-center gap-1 text-[#10b981] cursor-pointer overflow-hidden active:scale-95 transition-all shadow-sm">
                     <input type="file" accept="image/*" onChange={handleImageChange} className="hidden" />
@@ -338,40 +330,40 @@ export default function App() {
                   {formData.image && <button type="button" onClick={() => setFormData({...formData, image: null})} className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-1 shadow-lg z-10"><X size={14} /></button>}
                 </div>
              </div>
-             <select value={formData.area} onChange={e => setFormData({...formData, area: e.target.value})} className="p-4 rounded-xl border-2 font-bold bg-white">{GEUMJEONG_AREAS.map(a => <option key={a} value={a}>{a}</option>)}</select>
-             <div className="grid grid-cols-2 gap-3">{TRASH_CATEGORIES.map(c => (<button key={c.id} type="button" onClick={() => setFormData({...formData, category: c.id})} className={`p-4 rounded-xl border-2 flex items-center gap-2 transition-all ${formData.category === c.id ? 'border-[#10b981] bg-white shadow-inner' : 'border-transparent bg-white shadow-sm'}`}><span className="text-xl">{c.icon}</span><span className="text-[10px] font-black">{c.label}</span></button>))}</div>
-             <textarea value={formData.description} onChange={e => setFormData({...formData, description: e.target.value})} placeholder="상황 입력..." className="p-4 rounded-[25px] h-24 border-2 outline-none focus:border-[#10b981]" />
+             <select value={formData.area} onChange={e => setFormData({...formData, area: e.target.value})} className="p-4 rounded-xl border-2 border-[#e2e8f0] font-bold bg-white text-[#1e293b]">{GEUMJEONG_AREAS.map(a => <option key={a} value={a}>{a}</option>)}</select>
+             <div className="grid grid-cols-2 gap-3">{TRASH_CATEGORIES.map(c => (<button key={c.id} type="button" onClick={() => setFormData({...formData, category: c.id})} className={`p-4 rounded-xl border-2 flex items-center gap-2 transition-all ${formData.category === c.id ? 'border-[#10b981] bg-white shadow-inner scale-95' : 'border-transparent bg-white shadow-sm'}`}><span className="text-xl">{c.icon}</span><span className="text-[10px] font-black text-[#1e293b]">{c.label}</span></button>))}</div>
+             <textarea value={formData.description} onChange={e => setFormData({...formData, description: e.target.value})} placeholder="상황을 간단히 입력해 주세요." className="p-4 rounded-[25px] h-24 border-2 border-[#e2e8f0] outline-none focus:border-[#10b981] text-[#1e293b]" />
              <button disabled={isUploading} className="bg-[#10b981] text-white p-5 rounded-[25px] font-black text-lg shadow-xl flex items-center justify-center gap-2 active:scale-95 transition-all">{isUploading ? <Loader2 className="animate-spin" size={24}/> : "지도에 업로드"}</button>
           </form>
         </div>
 
         <div className={`absolute inset-0 bg-[#f0fdf4] p-6 overflow-y-auto ${activeTab === 'list' ? 'visible' : 'hidden'}`}>
-           <h2 className="text-xl font-black mb-6">ACTIVITY FEED</h2>
+           <h2 className="text-xl font-black text-[#1e293b] mb-6">ACTIVITY FEED</h2>
            {reports.length === 0 ? <div className="text-center py-24 text-slate-400 font-black">기록이 없습니다.</div> : reports.map(r => (
-             <div key={r.id} className="bg-white p-5 rounded-[35px] mb-5 border border-[#d1fae5] shadow-md">
-                <div className="flex justify-between items-center mb-4"><span className="text-[10px] font-black text-[#10b981] bg-green-50 px-3 py-1 rounded-full">{TRASH_CATEGORIES.find(c => c.id === r.category)?.icon} {r.area}</span><button onClick={() => handleToggleStatus(r.id, r.status)} className={`text-[9px] font-black px-3 py-1 rounded-full ${r.status === 'solved' ? 'bg-[#10b981] text-white' : 'bg-slate-100 text-slate-400'}`}>{r.status === 'solved' ? '완료됨 ✓' : '진행중'}</button></div>
+             <div key={r.id} className="bg-white p-5 rounded-[35px] mb-5 border border-[#d1fae5] shadow-md text-center">
+                <div className="flex justify-between items-center mb-4"><span className="text-[10px] font-black text-[#10b981] bg-green-50 px-3 py-1 rounded-full border border-green-100 flex items-center gap-2">{TRASH_CATEGORIES.find(c => c.id === r.category)?.icon} {r.area}</span><button onClick={() => handleToggleStatus(r.id, r.status)} className={`text-[9px] font-black px-3 py-1 rounded-full shadow-sm transition-all active:scale-90 ${r.status === 'solved' ? 'bg-[#10b981] text-white' : 'bg-slate-100 text-slate-400'}`}>{r.status === 'solved' ? '해결됨 ✓' : '진행중'}</button></div>
                 {r.image && <img src={r.image} className="w-full h-44 object-cover rounded-[25px] mb-4 border border-slate-100" />}
-                <p className="text-sm text-slate-600 font-semibold mb-4">{r.description}</p>
-                <div className="flex justify-between items-center pt-4 border-t border-slate-50"><span className="text-[11px] text-slate-400 font-black flex items-center gap-1"><User size={12}/> {r.userName}</span>{(r.userName === nickname || isAdmin) && <button onClick={() => handleDelete(r.id)} className="p-1 text-red-200"><Trash2 size={18}/></button>}</div>
+                <p className="text-base text-slate-600 leading-relaxed font-semibold px-2 mb-4">{r.description || "내용 없음"}</p>
+                <div className="flex justify-between items-center pt-4 border-t border-slate-50"><span className="text-[11px] text-slate-400 font-black flex items-center gap-1.5"><User size={12}/> {r.userName}</span>{(r.userName === nickname || isAdmin) && <button onClick={() => handleDelete(r.id)} className="p-1 text-red-200 active:scale-90 transition-all"><Trash2 size={18}/></button>}</div>
              </div>
            ))}
         </div>
 
         <div className={`absolute inset-0 bg-[#f0fdf4] p-8 overflow-y-auto ${activeTab === 'stats' ? 'visible' : 'hidden'}`}>
-           <h2 className="text-xl font-black mb-8">ACTIVITY STATS</h2>
+           <h2 className="text-xl font-black text-[#1e293b] mb-8">ACTIVITY STATS</h2>
            <div className="bg-[#1e293b] p-10 rounded-[50px] text-center mb-6 shadow-2xl"><h3 className="text-5xl font-black text-white">{reports.length}</h3><p className="text-[10px] font-black text-[#10b981] tracking-widest uppercase opacity-90">Total Trash Found</p></div>
            <div className="grid grid-cols-2 gap-4 mb-10">
-              <div className="bg-white p-6 rounded-[30px] text-center shadow-lg"><p className="text-[10px] font-black text-slate-400 mb-1 uppercase">Solved</p><p className="text-2xl font-black text-[#10b981]">{reports.filter(r=>r.status==='solved').length}</p></div>
-              <div className="bg-white p-6 rounded-[30px] text-center shadow-lg"><p className="text-[10px] font-black text-slate-400 mb-1 uppercase">Remaining</p><p className="text-2xl font-black text-slate-800">{reports.filter(r=>r.status!=='solved').length}</p></div>
+              <div className="bg-white p-6 rounded-[30px] text-center shadow-lg border border-green-50"><p className="text-[10px] font-black text-slate-400 mb-1 uppercase">Solved</p><p className="text-2xl font-black text-[#10b981]">{reports.filter(r=>r.status==='solved').length}</p></div>
+              <div className="bg-white p-6 rounded-[30px] text-center shadow-lg border border-green-50"><p className="text-[10px] font-black text-slate-400 mb-1 uppercase">Remaining</p><p className="text-2xl font-black text-slate-800">{reports.filter(r=>r.status!=='solved').length}</p></div>
            </div>
-           {isAdmin && (<div className="bg-white p-10 rounded-[40px] border-2 border-dashed border-red-100 text-center shadow-md animate-pulse"><h4 className="text-red-500 font-black mb-2 flex items-center justify-center gap-2"><AlertTriangle size={20}/> ADMIN TOOLS</h4><button onClick={clearAllData} className="w-full bg-red-500 text-white p-4 rounded-2xl font-black shadow-lg">데이터 전체 초기화</button></div>)}
+           {isAdmin && (<div className="bg-white p-10 rounded-[40px] border-2 border-dashed border-red-100 text-center shadow-md animate-pulse"><h4 className="text-red-500 font-black mb-2 flex items-center justify-center gap-2"><AlertTriangle size={20}/> ADMIN TOOLS</h4><p className="text-[10px] text-slate-400 mb-6">전체 데이터를 초기화합니다.</p><button onClick={clearAllData} className="w-full bg-red-500 text-white p-4 rounded-2xl font-black shadow-lg">데이터 전체 초기화</button></div>)}
         </div>
       </main>
 
-      <nav className="h-[80px] bg-white border-t flex justify-around items-center px-4 pb-4 shrink-0">
-        <button onClick={() => setActiveTab('map')} className={`flex flex-col items-center gap-1 ${activeTab === 'map' ? 'text-[#10b981]' : 'text-slate-300'}`}><MapPin size={24} fill={activeTab === 'map' ? 'currentColor' : 'none'}/><span className="text-[10px] font-black">지도</span></button>
-        <button onClick={() => setActiveTab('list')} className={`flex flex-col items-center gap-1 ${activeTab === 'list' ? 'text-[#10b981]' : 'text-slate-300'}`}><List size={24}/><span className="text-[10px] font-black">피드</span></button>
-        <button onClick={() => setActiveTab('stats')} className={`flex flex-col items-center gap-1 ${activeTab === 'stats' ? 'text-[#10b981]' : 'text-slate-300'}`}><BarChart3 size={24}/><span className="text-[10px] font-black">통계</span></button>
+      <nav className="h-[90px] bg-white border-t border-[#d1fae5] flex justify-around items-center px-4 pb-8 shrink-0 shadow-[0_-10px_20px_rgba(0,0,0,0.02)]">
+        <button onClick={() => setActiveTab('map')} className={`flex flex-col items-center gap-1 ${activeTab === 'map' ? 'text-[#10b981]' : 'text-slate-300'}`}><MapPin size={24} fill={activeTab === 'map' ? 'currentColor' : 'none'} strokeWidth={3}/><span className="text-[10px] font-black">지도</span></button>
+        <button onClick={() => setActiveTab('list')} className={`flex flex-col items-center gap-1 ${activeTab === 'list' ? 'text-[#10b981]' : 'text-slate-300'}`}><List size={24} strokeWidth={3}/><span className="text-[10px] font-black">피드</span></button>
+        <button onClick={() => setActiveTab('stats')} className={`flex flex-col items-center gap-1 ${activeTab === 'stats' ? 'text-[#10b981]' : 'text-slate-300'}`}><BarChart3 size={24} strokeWidth={3}/><span className="text-[10px] font-black">통계</span></button>
       </nav>
       
       <style>{`
